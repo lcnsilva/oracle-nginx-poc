@@ -27,9 +27,15 @@ Diferente dos outros documentos do repositório:
 | 2A | 6 — Abrir a porta 80 nas duas camadas | ✅ concluída |
 | 2B | 7 — Proxy reverso | ✅ concluída |
 
-**Próximo passo:** versionar a versão final do `nginx/poc-api.conf` e fazer a
-revisão conceitual da Tarefa 7. Depois disso, a POC está completa e a Fase 3
-(rate limiting e fail2ban) ganha spec própria.
+**POC concluída.** Todas as sete tarefas fechadas, com as revisões conceituais
+feitas. Pendência única: commitar a versão final de `nginx/poc-api.conf`.
+
+**Próximo passo:** Fase 3 — rate limiting e fail2ban — em spec e plano
+próprios.
+
+Documentos irmãos: [`backlog.md`](backlog.md) para o que ficou fora de escopo, e
+[`perguntas-e-respostas.md`](perguntas-e-respostas.md) para as dúvidas que
+surgiram durante a execução, com as respostas.
 
 Ideias levantadas fora do escopo estão em [`backlog.md`](backlog.md).
 
@@ -605,6 +611,67 @@ A correção `de8266a` é uma **previsão**, não um fato observado. Ao abrir ap
 a Security List, o erro esperado muda de `timeout` para `No route to host`. Se
 o erro ICMP for filtrado no caminho de volta, pode continuar aparecendo como
 timeout. **Anotar aqui o que realmente acontecer.**
+
+---
+
+## Checkpoint final
+
+| Item | Estado |
+|---|---|
+| `curl.exe http://129.159.50.172/health` retorna o JSON da API | ✅ |
+| `curl.exe http://129.159.50.172/info` retorna o JSON da API | ✅ |
+| `sudo ss -tlnp \| grep 8080` mostra `127.0.0.1:8080` | ✅ |
+| `docker logs poc-api` registra o IP público real do cliente | ✅ |
+| Após `sudo reboot`, tudo continua funcionando sem intervenção | ✅ |
+| Revisões conceituais das Tarefas 2 a 7 | ✅ |
+| `nginx/poc-api.conf` idêntico ao arquivo em uso na VM | ⬜ |
+
+### O caminho completo, de ponta a ponta
+
+```
+cliente (177.16.235.121)
+   │  HTTP :80
+   ▼
+Internet Gateway ──> Route Table (0.0.0.0/0) ──> Subnet pública
+   │
+   ▼
+Security List: ACCEPT tcp dport 80          ← camada 1, fora da VM
+   │
+   ▼
+iptables INPUT regra 5: ACCEPT tcp dport 80 ← camada 2, dentro da VM
+   │
+   ▼
+Nginx :80  ──  proxy_pass + 3 headers
+   │
+   ▼
+docker-proxy (127.0.0.1:8080)
+   │
+   ▼
+container 172.17.0.2:8080  ──  NestJS ouvindo em 0.0.0.0
+```
+
+Cinco pontos de bloqueio possíveis, cada um com o mesmo sintoma quando falha.
+A ordem do plano — provar rede com conteúdo estático antes de introduzir o
+proxy — existe para que nunca houvesse mais de um suspeito por vez.
+
+### Onde a intuição falhou
+
+Lista dos pontos em que o comportamento observado contrariou o previsto,
+inclusive por mim. Todos estão detalhados nas seções acima.
+
+1. **`Connection refused` não é `timeout`.** O primeiro prova que o pacote fez
+   o caminho de ida e a resposta fez o de volta; o segundo não prova nada.
+2. **As duas camadas de firewall dão o mesmo sintoma.** A previsão de que o
+   `REJECT` do iptables produziria `No route to host` não se confirmou: o ICMP
+   é filtrado no retorno. `tcpdump` é o que distingue.
+3. **Reload com configuração inválida não derruba o Nginx.** O mestre mantém a
+   configuração antiga. O risco é a mudança não ser aplicada em silêncio.
+4. **`nginx -t` não detecta "esqueci de aplicar".** A configuração antiga
+   também é válida. Quem responde é `nginx -T`.
+5. **O container vê `172.17.0.1`, não `127.0.0.1`.** O `docker-proxy` abre uma
+   conexão nova pela bridge — já havia um proxy no caminho antes do Nginx.
+6. **O iptables não protege porta publicada por container.** O Docker escreve
+   DNAT em `PREROUTING` e o tráfego segue por `FORWARD`, contornando a `INPUT`.
 
 ---
 
