@@ -23,11 +23,13 @@ Diferente dos outros documentos do repositório:
 | 0 | 2 — Provisionamento da VM na OCI | ✅ concluída |
 | 1 | 3 — API NestJS local | ✅ concluída |
 | 1 | 4 — Dockerfile e deploy na VM | ✅ concluída |
-| 2A | 5 — Nginx servindo estático | 🔄 próxima |
-| 2A | 6 — Abrir a porta 80 nas duas camadas | ⬜ não iniciada |
+| 2A | 5 — Nginx servindo estático | ✅ concluída |
+| 2A | 6 — Abrir a porta 80 nas duas camadas | 🔄 próxima |
 | 2B | 7 — Proxy reverso | ⬜ não iniciada |
 
-**Próximo passo:** Tarefa 5, passo 1 — instalar o Nginx na VM.
+**Próximo passo:** Tarefa 6 — abrir a porta 80 na Security List e no iptables.
+
+Ideias levantadas fora do escopo estão em [`backlog.md`](backlog.md).
 
 ---
 
@@ -305,6 +307,85 @@ invisível — tudo continuaria funcionando pelo Nginx, nenhum teste falharia.
 Para filtrar tráfego de container com iptables existe a chain `DOCKER-USER`,
 avaliada antes das regras geradas pelo Docker. Fora do escopo desta POC, que
 resolve prendendo no loopback.
+
+---
+
+## Tarefa 5 — Nginx servindo estático ✅
+
+Material: [`apostila/02a-nginx-estatico-e-rede.md`](apostila/02a-nginx-estatico-e-rede.md)
+
+Nenhum firewall foi tocado nesta tarefa. Validação apenas local, de propósito.
+
+### Executado
+
+1. `sudo apt install -y nginx`. O `curl localhost` devolveu a página
+   "Welcome to nginx!" — o site `default` do pacote, ocupando a porta 80.
+2. `sudo rm /etc/nginx/sites-enabled/default` e `systemctl reload nginx`.
+3. Página criada em `/var/www/poc-api/index.html`.
+4. `server` block escrito em `/etc/nginx/sites-available/poc-api`.
+5. Symlink criado em `sites-enabled`, `nginx -t` passou, reload aplicado.
+6. `curl localhost` devolveu o HTML da POC.
+7. Acesso externo testado e **falhou, como previsto**.
+
+### Episódio de diagnóstico: "de onde vem essa configuração?"
+
+O `rm` do site default acabou sendo executado duas vezes. A segunda devolveu:
+
+```
+rm: cannot remove '/etc/nginx/sites-enabled/default': No such file or directory
+```
+
+Como a primeira execução não tinha sido registrada, ficou a dúvida: o arquivo
+nunca existiu, ou já havia sido removido? A hipótese inicial era de que esta
+imagem usasse `conf.d/` em vez de `sites-enabled/` — o que teria invalidado a
+apostila. **Era falso.** A convenção `sites-available`/`sites-enabled` está lá,
+como descrito.
+
+O que resolveu:
+
+```bash
+sudo nginx -T
+```
+
+`-T` maiúsculo testa **e imprime** a configuração efetiva, com todos os
+`include` já resolvidos. A saída trazia apenas `nginx.conf` e `mime.types`:
+nenhum `server` block carregado, nada escutando na porta 80. Nginx ativo e sem
+nada para servir — estado legítimo, e exatamente o resultado esperado do
+passo 2.
+
+A confirmação veio dos timestamps:
+
+```
+/etc/nginx/conf.d/        Aug 19 16:57   ← nunca tocado
+/etc/nginx/sites-enabled/ Sep  7 17:44   ← modificado hoje
+```
+
+O diretório fora alterado no mesmo dia: o symlink existia e foi removido pela
+primeira execução do `rm`.
+
+Duas ferramentas que ficam do episódio:
+
+- `nginx -T` responde "de onde vem essa configuração", com os includes
+  resolvidos e o arquivo de origem de cada linha
+- `grep ':80'` casa também com `:8080`, por ser substring. Para filtrar porta
+  de verdade: `ss -tlnp sport = :80`
+
+### Checkpoint
+
+- [x] `curl localhost` devolve o `index.html` da POC
+- [x] Acesso externo falha — rede ainda fechada
+
+Saída do acesso externo, do Windows:
+
+```
+curl.exe --max-time 10 http://129.159.50.172
+curl: (28) Connection timed out after 10003 milliseconds
+```
+
+**Timeout**, como a previsão de `de8266a` antecipava para o estado "nenhuma das
+duas camadas aberta": a Security List descarta o pacote em silêncio. A segunda
+metade da previsão — a mensagem mudar para `No route to host` depois de abrir
+só a Security List — será verificada na Tarefa 6.
 
 ---
 
