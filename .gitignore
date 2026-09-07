@@ -1,0 +1,26 @@
+# Dependências e build
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Chaves privadas — nunca versionar
+*.pem
+*.key
+id_rsa*
+oci-poc-nginx
+oci-poc-nginx.pub
+
+# Ambiente
+.env
+.env.*
+!.env.example
+
+# Sistema operacional / editor
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
+
+# Logs
+*.log
+npm-debug.log*
