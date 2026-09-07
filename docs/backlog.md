@@ -89,7 +89,30 @@ Referência: https://nginx.org/en/docs/http/configuring_https_servers.html
 
 ---
 
-## 3. Fase 3 da spec original — rate limiting e fail2ban
+## 3. Remover headers que entregam a stack
+
+**Levantado em:** Tarefa 7, ao inspecionar a resposta com `curl -i`.
+
+```
+Server: nginx/1.24.0 (Ubuntu)
+X-Powered-By: Express
+```
+
+Os dois anunciam o que roda ali e em qual versão, para qualquer um que olhe os
+headers. Não é vulnerabilidade por si só, mas poupa trabalho de reconhecimento
+a quem procura alvos com versão vulnerável conhecida — e a POC já registrou
+sonda automatizada chegando em menos de uma hora.
+
+- `X-Powered-By`: removido no lado da aplicação, com `app.disable('x-powered-by')`
+  no adapter do Express.
+- `Server`: `server_tokens off;` no Nginx oculta a versão, deixando apenas
+  `nginx`. Remover o header por completo exige módulo de terceiros.
+
+Referência: https://nginx.org/en/docs/http/ngx_http_core_module.html#server_tokens
+
+---
+
+## 4. Fase 3 da spec original — rate limiting e fail2ban
 
 Previsto desde o plano original, com spec e plano próprios após o checkpoint da
 Tarefa 7:

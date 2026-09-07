@@ -25,9 +25,11 @@ Diferente dos outros documentos do repositório:
 | 1 | 4 — Dockerfile e deploy na VM | ✅ concluída |
 | 2A | 5 — Nginx servindo estático | ✅ concluída |
 | 2A | 6 — Abrir a porta 80 nas duas camadas | ✅ concluída |
-| 2B | 7 — Proxy reverso | 🔄 próxima |
+| 2B | 7 — Proxy reverso | ✅ concluída |
 
-**Próximo passo:** Tarefa 7 — trocar o conteúdo estático por `proxy_pass`.
+**Próximo passo:** versionar a versão final do `nginx/poc-api.conf` e fazer a
+revisão conceitual da Tarefa 7. Depois disso, a POC está completa e a Fase 3
+(rate limiting e fail2ban) ganha spec própria.
 
 Ideias levantadas fora do escopo estão em [`backlog.md`](backlog.md).
 
@@ -471,6 +473,112 @@ curl localhost             → index.html            ← serviço do Nginx no bo
 ```
 
 Cada um volta por um mecanismo diferente, configurado em uma tarefa diferente.
+
+---
+
+## Tarefa 7 — Proxy reverso ✅
+
+Material: [`apostila/02b-proxy-reverso.md`](apostila/02b-proxy-reverso.md)
+
+### Preparação: log de requisição
+
+O plano previa observar em `docker logs` que a API vê todos os clientes como
+`127.0.0.1`. **Isso não funcionaria:** o NestJS não registra requisições por
+padrão, só as linhas de bootstrap. Foi preciso adicionar um middleware em
+`api/src/main.ts` registrando método, caminho, `socket.remoteAddress` e os dois
+headers de encaminhamento.
+
+Os parâmetros exigiram tipagem explícita (`Request`, `Response`, `NextFunction`
+do `express`) por causa do modo estrito do TypeScript. O parâmetro não usado
+recebeu prefixo `_`, mas não pode ser omitido: o Express identifica middleware
+comum pela **quantidade** de parâmetros.
+
+### Baseline, antes de qualquer proxy
+
+```
+GET /health | socket=172.17.0.1 | x-real-ip=- | x-forwarded-for=-
+```
+
+`172.17.0.1`, não `127.0.0.1` como o material previa. É o gateway da bridge
+`docker0` — o lado do host na rede do container:
+
+```
+curl (VM) ──> 127.0.0.1:8080 ──> docker-proxy ──> 172.17.0.2:8080 (container)
+              └─ conexão 1 ─┘                 └─ conexão 2 ─┘
+```
+
+O `docker-proxy` não repassa a conexão original: abre uma nova, saindo pela
+bridge. Já havia um proxy no caminho antes do Nginx entrar — e com dois saltos,
+o endereço do socket **nunca** revela o cliente real. Header é a única via.
+
+### Versão 1 — proxy sem headers
+
+`root`, `index` e `try_files` removidos; `proxy_pass http://127.0.0.1:8080`
+no lugar. Resposta confirmando a cadeia inteira:
+
+```
+HTTP/1.1 200 OK
+Server: nginx/1.24.0 (Ubuntu)     ← quem respondeu
+X-Powered-By: Express             ← quem gerou o conteúdo
+Content-Type: application/json    ← veio da API, não do disco
+```
+
+Acesso externo funcionando, e a perda de informação visível no log — cinco
+requisições, duas delas vindas da internet, todas registradas como
+`172.17.0.1` com os headers vazios.
+
+### Episódio: o 404 que não devia existir
+
+Logo após o primeiro `reload`, `curl localhost/health` devolveu o 404 do Nginx
+— o comportamento da configuração **estática**, não da nova.
+
+`nginx -t` havia passado, e isso não significa nada aqui: a configuração antiga
+é sintaticamente perfeita. `nginx -t` pega erro de digitação, não "a mudança
+não foi aplicada".
+
+O que respondeu foi `nginx -T`, comparando o arquivo em disco com a
+configuração efetivamente carregada — as duas já tinham o `proxy_pass`. O
+`curl` havia corrido junto com o reload. Repetido, retornou 200.
+
+É exatamente a falha silenciosa documentada em `b21ec7f`: nada reclama, e o
+comportamento é o antigo.
+
+Verificação barata que passou a ser usada depois de cada reload:
+
+```bash
+sudo nginx -T | grep -c proxy_set_header
+```
+
+### Versão 2 — com os headers
+
+```nginx
+proxy_set_header Host            $host;
+proxy_set_header X-Real-IP       $remote_addr;
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+```
+
+Resultado, com tráfego novo vindo do Windows:
+
+```
+GET /health | socket=172.17.0.1 | x-real-ip=177.16.235.121 | x-forwarded-for=177.16.235.121
+```
+
+O `socket` continua sendo o `docker-proxy`, e continuaria mesmo com tudo
+perfeito. O que mudou é a API **saber** quem chamou, porque o Nginx contou.
+
+### A internet encontrou a VM em menos de uma hora
+
+Entre as linhas do log, uma que ninguém pediu:
+
+```
+GET /api/config.json | socket=172.17.0.1 | x-real-ip=- | x-forwarded-for=-
+```
+
+Sonda de scanner automatizado procurando arquivo de configuração exposto. Os
+headers vazios datam a requisição: chegou antes do reload da versão 2, ou seja,
+menos de uma hora depois de a porta 80 ser aberta.
+
+Argumento concreto para a Fase 3 — rate limiting e fail2ban.
 
 ---
 
