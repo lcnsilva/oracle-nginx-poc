@@ -108,28 +108,181 @@ detalhe.
 
 ---
 
-## 3. Exercício
+## 3. Configuração anotada
 
-### Parte A — no Windows (Tarefa 3)
+Criar o projeto:
 
-1. **Antes de escrever código**, anote o JSON exato que `/health` e `/info`
-   devem retornar. Sem esse critério escrito, "funcionou" vira opinião, e as
-   validações das tarefas seguintes ficam sem referência.
-2. Criar o projeto com `npx @nestjs/cli new api`.
-3. Rodar e chamar `/health` **antes** de implementar, para ver o 404. Confirmar
-   que a ferramenta de teste funciona antes de testar o código é o que separa
-   "meu código está errado" de "meu comando está errado".
-4. Implementar os dois endpoints.
-5. Mudar a porta para 8080 e o bind para `0.0.0.0` no bootstrap.
-6. Validar com `curl.exe`.
+```bash
+npx @nestjs/cli new api
+```
 
-### Parte B — Dockerfile e VM (Tarefa 4)
+Antes de editar qualquer coisa, rode `npm run start` e chame
+`curl.exe http://localhost:3000/health`. Esperado: **404**. Confirmar que a
+ferramenta de teste funciona antes de testar o código é o que separa "meu
+código está errado" de "meu comando está errado".
 
-7. Escrever o `.dockerignore` (no mínimo `node_modules` e `dist`).
-8. Escrever o `Dockerfile` multi-stage.
-9. Commitar, dar push, clonar na VM.
-10. Buildar e rodar com `-p 127.0.0.1:8080:8080`.
-11. Validar com `curl` e confirmar o bind com `ss`.
+### 3.1 `api/src/app.controller.ts`
+
+Substitui o controller gerado pelo `nest new`:
+
+```typescript
+import { Controller, Get } from '@nestjs/common';
+
+@Controller()
+export class AppController {
+  @Get('health')
+  health() {
+    return { status: 'ok' };
+  }
+
+  @Get('info')
+  info() {
+    return {
+      name: 'poc-api',
+      version: '1.0.0',
+      uptime: Math.floor(process.uptime()),
+    };
+  }
+}
+```
+
+| Linha | O que faz |
+|---|---|
+| `@Controller()` | declara a classe como controller. Sem argumento, não há prefixo de rota — os caminhos ficam `/health` e `/info`, e não `/algo/health` |
+| `@Get('health')` | associa o método ao `GET /health` |
+| `return { ... }` | o Nest serializa o objeto para JSON e define o `Content-Type` automaticamente. Não é preciso mexer no objeto de resposta |
+| `process.uptime()` | segundos desde o início do processo Node. Útil para ver, depois, se o container reiniciou |
+
+O `app.service.ts` gerado pelo `nest new` deixa de ser usado. Pode ser
+removido, junto com sua injeção no `app.module.ts` — ou deixado como está, sem
+efeito.
+
+Referência: https://docs.nestjs.com/controllers
+
+### 3.2 `api/src/main.ts`
+
+```typescript
+import { NestFactory } from '@nestjs/core';
+import { AppModule } from './app.module';
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+  await app.listen(8080, '0.0.0.0');
+}
+bootstrap();
+```
+
+A única mudança em relação ao arquivo gerado é a linha do `listen`. O
+`nest new` escreve algo como `await app.listen(process.env.PORT ?? 3000)`.
+
+| Argumento | Por quê |
+|---|---|
+| `8080` | porta interna definida pela POC. O `nest new` usa 3000; se você não trocar, o `-p` do Docker aponta para uma porta onde não há nada e o `curl` recusa conexão |
+| `'0.0.0.0'` | bind em todas as interfaces do container. **Sem este segundo argumento**, o Nest liga no loopback do container e fica inalcançável de fora dele |
+
+Rodando no Windows, o `0.0.0.0` não muda nada visível. Ele só passa a importar
+na Tarefa 4. Fazer a mudança agora evita depurar isso mais tarde misturado com
+suspeita de Docker.
+
+Referência: https://docs.nestjs.com/first-steps
+
+### 3.3 `api/Dockerfile`
+
+> **Procedência.** Este é o único artefato desta POC que não é transcrição de
+> documentação oficial. O NestJS não publica Dockerfile oficial; o arquivo
+> abaixo é composto a partir do guia de multi-stage build do Docker
+> (https://docs.docker.com/build/building/multi-stage/) e da referência de
+> Dockerfile (https://docs.docker.com/reference/dockerfile/).
+
+```dockerfile
+# --- Estágio 1: build ---
+FROM node:22-alpine AS builder
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci
+
+COPY . .
+RUN npm run build
+
+# --- Estágio 2: runtime ---
+FROM node:22-alpine
+
+WORKDIR /app
+ENV NODE_ENV=production
+
+COPY package*.json ./
+RUN npm ci --omit=dev && npm cache clean --force
+
+COPY --from=builder /app/dist ./dist
+
+EXPOSE 8080
+CMD ["node", "dist/main.js"]
+```
+
+| Linha | O que faz |
+|---|---|
+| `FROM node:22-alpine AS builder` | imagem base do primeiro estágio. `alpine` é uma distribuição mínima — imagem muito menor. `AS builder` nomeia o estágio para ser referenciado depois |
+| `WORKDIR /app` | define o diretório de trabalho e o cria. Substitui um `mkdir` + `cd` |
+| `COPY package*.json ./` | copia **só** os manifestos, antes do código. Enquanto as dependências não mudarem, o Docker reaproveita a camada do `npm ci` em builds seguintes |
+| `RUN npm ci` | instala exatamente o que está no `package-lock.json`. Diferente de `npm install`, não atualiza o lock — build reproduzível |
+| `COPY . .` | agora sim o código-fonte. Fica depois do `npm ci` de propósito: mudar o código não invalida a camada de dependências |
+| `RUN npm run build` | compila o TypeScript para `dist/` |
+| `FROM node:22-alpine` (2ª vez) | começa uma imagem nova, do zero. Nada do estágio anterior vem junto, exceto o que for copiado explicitamente |
+| `ENV NODE_ENV=production` | sinaliza modo produção para o Node e para bibliotecas que consultam essa variável |
+| `npm ci --omit=dev` | instala só dependências de produção. TypeScript, ESLint e o CLI do Nest ficam de fora |
+| `npm cache clean --force` | remove o cache do npm da camada final. Sem isso, o cache vai junto na imagem |
+| `COPY --from=builder /app/dist ./dist` | traz apenas o resultado compilado do primeiro estágio. É esta linha que faz o multi-stage valer a pena |
+| `EXPOSE 8080` | documenta a porta usada. **Não publica nada** — publicar é papel do `-p` no `docker run` |
+| `CMD ["node", "dist/main.js"]` | comando de início. Forma com colchetes (*exec form*) executa o binário direto, sem shell intermediário, o que faz o sinal de parada do Docker chegar ao Node |
+
+Sobre a versão fixada: `node:22-alpine` é uma linha LTS. Fixar a versão maior
+evita que um build futuro troque de Node sem aviso. Se a sua VM for ARM
+(shape Ampere), a mesma tag funciona — a imagem oficial do Node publica
+`arm64`.
+
+### 3.4 `api/.dockerignore`
+
+```
+node_modules
+dist
+.git
+Dockerfile
+.dockerignore
+npm-debug.log
+```
+
+| Entrada | Por quê |
+|---|---|
+| `node_modules` | o `COPY . .` levaria o `node_modules` do **Windows** para dentro da imagem Linux. Além de inflar o build, dependências com binários compilados quebram por diferença de plataforma |
+| `dist` | o build acontece dentro da imagem. Copiar um `dist` local arrisca subir código velho |
+| `.git` | histórico inteiro do repositório, sem utilidade em runtime |
+| `Dockerfile`, `.dockerignore` | não são usados pela aplicação |
+| `npm-debug.log` | ruído de builds falhos anteriores |
+
+### 3.5 Build e execução na VM
+
+```bash
+git clone <url-do-repositorio> ~/poc-nginx
+cd ~/poc-nginx/api
+docker build -t poc-api .
+docker run -d --name poc-api --restart unless-stopped -p 127.0.0.1:8080:8080 poc-api
+```
+
+| Trecho | O que faz |
+|---|---|
+| `docker build -t poc-api .` | constrói a imagem e a nomeia `poc-api`. O `.` é o *build context*: o diretório enviado ao daemon, filtrado pelo `.dockerignore` |
+| `-d` | *detached* — o container roda em segundo plano e o terminal volta |
+| `--name poc-api` | nome fixo, para os comandos `docker logs` e `docker stop` seguintes |
+| `--restart unless-stopped` | o Docker reinicia o container no boot da VM e após falhas, exceto se você o parou de propósito. É o que faz a POC sobreviver ao `reboot` da Tarefa 6 |
+| `-p 127.0.0.1:8080:8080` | publica a porta **somente no loopback do host**. O prefixo `127.0.0.1:` é o que impede a API de ficar exposta à internet |
+| `poc-api` (último) | a imagem a executar |
+
+Em 1 OCPU / 1 GB o build leva vários minutos e usa swap. Lentidão é esperada;
+um `Killed` não é — se acontecer, o swap da Tarefa 2 não está ativo.
+
+Referência: https://docs.docker.com/engine/network/
 
 ---
 

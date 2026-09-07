@@ -257,39 +257,257 @@ https://docs.oracle.com/en-us/iaas/Content/Compute/References/bestpracticescompu
 
 ---
 
-## 3. Exercício
+## 3. Configuração anotada
 
-### Parte A — Nginx servindo estático (Tarefa 5)
+### 3.0 Instalar o Nginx e liberar a porta 80
 
-1. Instalar o Nginx e ver a página default que já sobe sozinha na porta 80.
-2. Desabilitar o site default removendo o symlink de `sites-enabled` — e
-   confirmar que o arquivo continua em `sites-available`.
-3. Criar `/var/www/poc-api/index.html` com um conteúdo identificável.
-4. Escrever o `server` block em `/etc/nginx/sites-available/poc-api`:
-   escuta na 80, serve `/var/www/poc-api`, entrega o `index.html` em `/`.
-5. Habilitar o site com um symlink, rodar `nginx -t`, recarregar.
-6. Validar com `curl localhost`.
-7. Tentar de fora e **ver falhar** — este passo não é opcional.
-8. Copiar o config para `nginx/poc-api.conf` no repositório e commitar.
+```bash
+sudo apt install -y nginx
+curl localhost
+```
 
-### Parte B — as duas camadas de firewall (Tarefa 6)
+Esperado: a página "Welcome to nginx!". Ela vem do site `default` que o pacote
+do Ubuntu já habilita — é ele que ocupa a porta 80.
 
-9. Registrar o estado "antes" com um `curl.exe` do Windows (timeout).
-10. Adicionar a regra de Ingress na Security List: `CIDR`, `0.0.0.0/0`, `TCP`,
-    Source Port `All`, Destination Port `80`.
-11. Testar de novo — **ainda deve falhar**. É a camada 2 bloqueando.
-12. Fazer backup do iptables.
-13. Abrir uma segunda sessão SSH e mantê-la aberta.
-14. Localizar o número da linha do `REJECT`.
-15. Inserir a regra da porta 80 **antes** dela, com `-I`.
-16. Testar o SSH numa terceira sessão antes de qualquer outra coisa.
-17. Validar o acesso externo — deve entregar o `index.html`.
-18. Persistir com `netfilter-persistent save` e confirmar com um reboot.
+```bash
+sudo rm /etc/nginx/sites-enabled/default
+sudo systemctl reload nginx
+curl localhost
+```
 
-> **Atenção.** Os passos 12, 13 e 16 existem para tornar reversível um erro que,
-> sem eles, custa a instância inteira. Um iptables mal editado derruba o SSH
-> permanentemente, e a única recuperação é console serial da OCI ou recriar a
-> VM do zero. Nenhum dos três é opcional.
+Esperado agora: erro de conexão ou resposta vazia. A porta 80 está livre.
+
+Repare no que foi removido: apenas o **symlink** em `sites-enabled`. O arquivo
+continua em `/etc/nginx/sites-available/default`, intacto. Recriar o symlink
+traz o site de volta.
+
+### 3.1 `/etc/nginx/sites-available/poc-api` — versão estática
+
+Antes, criar o diretório e a página:
+
+```bash
+sudo mkdir -p /var/www/poc-api
+```
+
+`/var/www/poc-api/index.html`:
+
+```html
+<!doctype html>
+<html lang="pt-BR">
+  <head><meta charset="utf-8"><title>POC Nginx</title></head>
+  <body>
+    <h1>Nginx servindo estatico — POC</h1>
+    <p>Se voce esta lendo isto pelo IP publico, a rede esta provada.</p>
+  </body>
+</html>
+```
+
+O conteúdo precisa ser identificável: quando essa página aparecer no navegador,
+não pode restar dúvida se veio do seu `server` block ou de um cache, de um
+default ou de outro site.
+
+O `server` block, em `/etc/nginx/sites-available/poc-api`:
+
+```nginx
+server {
+    listen 80 default_server;
+
+    server_name _;
+
+    root /var/www/poc-api;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+}
+```
+
+| Linha | O que faz |
+|---|---|
+| `server { ... }` | uma diretiva de bloco, no contexto `http`. Define um site |
+| `listen 80 default_server` | escuta na porta 80. `default_server` marca este bloco como o que atende requisições cujo `Host` não casa com nenhum outro `server_name` — necessário porque você acessa por IP, sem nome de domínio |
+| `server_name _` | `_` é um nome que nunca casa com um host real. Combinado com `default_server`, é a forma idiomática de dizer "este é o catch-all" |
+| `root /var/www/poc-api` | diretório raiz. O caminho da URL é concatenado a ele: `/index.html` vira `/var/www/poc-api/index.html` |
+| `index index.html` | qual arquivo servir quando a URL termina em `/` |
+| `location / { ... }` | bloco que casa com todos os caminhos. É o mais curto possível, então perde para qualquer prefixo mais específico que você adicionar depois |
+| `try_files $uri $uri/ =404` | tenta o caminho como arquivo, depois como diretório, e devolve 404 se nenhum existir. Sem ele, um caminho inexistente produz um erro menos claro |
+
+Referências:
+- `listen` — https://nginx.org/en/docs/http/ngx_http_core_module.html#listen
+- `server_name` — https://nginx.org/en/docs/http/ngx_http_core_module.html#server_name
+- `root` e `index` — https://nginx.org/en/docs/beginners_guide.html#static
+- `location` — https://nginx.org/en/docs/http/ngx_http_core_module.html#location
+- `try_files` — https://nginx.org/en/docs/http/ngx_http_core_module.html#try_files
+
+Habilitar, testar a sintaxe e recarregar:
+
+```bash
+sudo ln -s /etc/nginx/sites-available/poc-api /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+| Comando | O que faz |
+|---|---|
+| `ln -s <origem> <destino>` | cria o symlink que habilita o site |
+| `nginx -t` | testa a sintaxe **sem aplicar**. Esperado: `syntax is ok` e `test is successful` |
+| `systemctl reload nginx` | aplica. Por baixo envia o mesmo sinal de `nginx -s reload`: sobe workers novos e deixa os antigos terminarem as requisições em curso |
+
+Rode `nginx -t` antes de todo reload. Recarregar com sintaxe inválida é uma das
+poucas formas de derrubar o serviço por descuido.
+
+### 3.2 Ver a falha de fora — passo obrigatório
+
+No Windows, **antes** de tocar em qualquer firewall:
+
+```powershell
+curl.exe --max-time 10 http://<ip-publico>
+```
+
+Esperado: **timeout**. O Nginx está correto — `curl localhost` já provou isso —
+e o tráfego não chega. Ver esta falha agora, com a causa isolada e conhecida, é
+o ponto central da estratégia deste plano.
+
+`--max-time 10` evita esperar o timeout padrão sem saber se travou.
+
+### 3.3 Camada 1 — regra de Ingress na Security List
+
+Console da OCI: **Compute → Instances → sua instância → link da subnet →
+Security List associada → Add Ingress Rules**.
+
+| Campo | Valor | Por quê |
+|---|---|---|
+| Source Type | `CIDR` | a origem é uma faixa de endereços, não outro recurso da OCI |
+| Source CIDR | `0.0.0.0/0` | qualquer origem — é um site público |
+| IP Protocol | `TCP` | HTTP roda sobre TCP |
+| Source Port Range | `All` | a porta de origem do cliente é aleatória; restringir aqui bloquearia todo mundo |
+| Destination Port Range | `80` | a porta do Nginx |
+
+A regra é *stateful*: a resposta sai automaticamente, sem regra de egress
+correspondente.
+
+Referência: https://docs.oracle.com/en-us/iaas/Content/Network/Concepts/securitylists.htm
+
+**Teste de novo do Windows. Esperado: ainda timeout.** Não é erro seu — é a
+camada 2 bloqueando. É exatamente aqui que a maioria conclui que a Security
+List não funcionou e vai mexer no lugar errado.
+
+### 3.4 Camada 2 — iptables
+
+> **Atenção — risco de perda permanente de acesso à VM.** Esta seção altera as
+> regras que também governam o SSH. Um erro derruba a conexão e a instância
+> fica inacessível: não há desfazer, e a recuperação exige console serial da
+> OCI ou recriar a VM do zero. Os três passos de proteção abaixo — backup,
+> segunda sessão aberta e teste em terceira sessão — não são opcionais.
+
+**Passo 1 — backup.**
+
+```bash
+sudo iptables-save > ~/iptables.backup
+```
+
+Despeja o conjunto de regras atual em um arquivo. É o que permite voltar atrás.
+
+**Passo 2 — abrir uma segunda sessão SSH e deixá-la aberta.**
+
+Em outro terminal do Windows, conecte de novo na VM. Mantenha **as duas**
+abertas até o fim. Conexões já estabelecidas não são derrubadas por uma regra
+nova — é essa sessão que restaura o backup se algo der errado.
+
+**Passo 3 — localizar a linha do `REJECT`.**
+
+```bash
+sudo iptables -L INPUT --line-numbers
+```
+
+Saída, resumida:
+
+```
+Chain INPUT (policy ACCEPT)
+num  target     prot opt source     destination
+1    ACCEPT     all  --  anywhere   anywhere     state RELATED,ESTABLISHED
+2    ACCEPT     icmp --  anywhere   anywhere
+3    ACCEPT     all  --  anywhere   anywhere
+4    ACCEPT     udp  --  anywhere   anywhere     udp spt:ntp
+5    ACCEPT     tcp  --  anywhere   anywhere     state NEW tcp dpt:ssh
+6    REJECT     all  --  anywhere   anywhere     reject-with icmp-host-prohibited
+```
+
+Anote o número da linha `REJECT` — no exemplo, `6`. **Confira na sua VM; o
+número varia conforme a imagem.**
+
+Repare na linha 5: é ela que libera o SSH. Não pode ser removida, alterada, nem
+acabar depois do `REJECT`.
+
+**Passo 4 — inserir a regra antes do `REJECT`.**
+
+Substituindo `<N>` pelo número que você anotou:
+
+```bash
+sudo iptables -I INPUT <N> -m state --state NEW -p tcp --dport 80 -j ACCEPT
+```
+
+| Trecho | O que faz |
+|---|---|
+| `-I INPUT <N>` | *insert* na posição `N` da chain `INPUT`, empurrando o `REJECT` para baixo. **`-A` acrescentaria ao final, depois do `REJECT`, e não teria efeito nenhum** |
+| `-m state --state NEW` | casa apenas conexões novas. As já estabelecidas são cobertas pela regra 1 |
+| `-p tcp --dport 80` | protocolo TCP, porta de destino 80 |
+| `-j ACCEPT` | ação: aceitar |
+
+Referência, seção "Essential Firewall Rules":
+https://docs.oracle.com/en-us/iaas/Content/Compute/References/bestpracticescompute.htm
+
+**Passo 5 — verificar o SSH antes de qualquer outra coisa.**
+
+Abra uma **terceira** sessão SSH. Se conectar, o acesso está preservado.
+
+Se não conectar, restaure imediatamente pela sessão que ainda está aberta:
+
+```bash
+sudo iptables-restore < ~/iptables.backup
+```
+
+**Passo 6 — validar o acesso externo.** No Windows:
+
+```powershell
+curl.exe http://<ip-publico>
+```
+
+Esperado: o `index.html`. **Rede provada.** Daqui em diante, falha de acesso
+externo é problema de configuração do Nginx.
+
+**Passo 7 — persistir.**
+
+```bash
+sudo netfilter-persistent save
+```
+
+Grava as regras em `/etc/iptables/rules.v4`. Sem isso, elas vivem só em memória
+e desaparecem no próximo boot — a POC "para de funcionar sozinha" dias depois,
+desconectada da causa.
+
+**Passo 8 — confirmar com um reboot.**
+
+```bash
+sudo reboot
+```
+
+Reconecte após alguns minutos e repita o Passo 6. Confirme também que o
+container voltou sozinho:
+
+```bash
+docker ps
+curl localhost:8080/health
+```
+
+É o `--restart unless-stopped` da Tarefa 4 que faz isso acontecer.
+
+### 3.5 Versionar a cópia do config
+
+Copie o conteúdo de `/etc/nginx/sites-available/poc-api` para
+`nginx/poc-api.conf` no repositório, e commite. A cópia é manual de propósito:
+automatizar o deploy esconderia justamente o que se quer aprender.
 
 ---
 

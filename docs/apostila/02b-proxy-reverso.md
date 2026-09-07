@@ -94,13 +94,17 @@ caminho inteiro. Numa cadeia com vários proxies, `X-Real-IP` sobrescrito por
 cada salto perde a informação anterior; o `X-Forwarded-For` acumula.
 
 E é exatamente aí que mora a armadilha da configuração: se você preencher
-`X-Forwarded-For` com o IP do cliente direto, o valor é **substituído** a cada
-salto e o header deixa de ser uma cadeia — vira uma cópia pior do `X-Real-IP`.
-O Nginx tem uma variável específica que resolve isso, anexando ao que já
-existia em vez de sobrescrever. Encontrá-la faz parte do exercício.
+`X-Forwarded-For` com `$remote_addr` — o IP do cliente direto — o valor é
+**substituído** a cada salto, e o header deixa de ser uma cadeia. Vira uma
+cópia pior do `X-Real-IP`.
 
-Ponto de partida — a lista de variáveis embutidas:
-https://nginx.org/en/docs/http/ngx_http_core_module.html#variables
+A variável correta é **`$proxy_add_x_forwarded_for`**: ela devolve o
+`X-Forwarded-For` que já chegou na requisição, com `$remote_addr` anexado ao
+final, separado por vírgula. Se não havia header nenhum, o resultado é só o
+`$remote_addr`. É por isso que ela acumula em vez de sobrescrever.
+
+- Variáveis embutidas: https://nginx.org/en/docs/http/ngx_http_core_module.html#variables
+- `$proxy_add_x_forwarded_for`: https://nginx.org/en/docs/http/ngx_http_proxy_module.html#var_proxy_add_x_forwarded_for
 
 Diretiva:
 https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_set_header
@@ -130,25 +134,147 @@ decisão de segurança em produção.
 
 ---
 
-## 3. Exercício
+## 3. Configuração anotada
 
-1. Registrar o estado "antes": chamar `/health` pelo IP público e receber 404
-   do Nginx. O caminho não existe como arquivo estático — o Nginx responde,
-   mas não sabe encaminhar.
-2. Editar o `server` block: tirar as diretivas de conteúdo estático e
-   encaminhar para `127.0.0.1:8080`.
-3. `nginx -t` e recarregar.
-4. Validar de dentro da VM (`curl localhost/health`) e de fora
-   (`curl.exe http://<ip>/health`).
-5. **Antes de configurar os headers**, olhar o `docker logs` e observar todas
-   as requisições registradas como vindas de `127.0.0.1`. Ver o problema antes
-   de aprender a diretiva que o resolve.
-6. Acrescentar `proxy_set_header` para `Host`, `X-Real-IP` e
-   `X-Forwarded-For` — este último com a variável que **acumula** a cadeia, não
-   com o IP direto do cliente.
-7. Recarregar, gerar tráfego novo do Windows e conferir o `docker logs` de
-   novo.
-8. Atualizar `nginx/poc-api.conf` no repositório e commitar.
+A configuração vem em **duas versões, aplicadas em ordem**. A primeira está
+deliberadamente incompleta: ela faz o proxy funcionar e perde a informação de
+origem. Você aplica, observa a perda no `docker logs`, e só então aplica a
+segunda. Ver o problema antes da solução é o que faz os `proxy_set_header`
+significarem alguma coisa.
+
+### 3.0 Registrar o estado "antes"
+
+No Windows:
+
+```powershell
+curl.exe http://<ip-publico>/health
+```
+
+Esperado: **404 do Nginx**. O caminho `/health` não existe como arquivo em
+`/var/www/poc-api`. O Nginx está respondendo — só não sabe encaminhar ainda.
+
+### 3.1 `/etc/nginx/sites-available/poc-api` — versão 1, sem os headers
+
+```nginx
+server {
+    listen 80 default_server;
+
+    server_name _;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+    }
+}
+```
+
+| Linha | O que faz |
+|---|---|
+| `listen` e `server_name` | inalterados em relação à versão estática |
+| `root` e `index` | **removidos**. O conteúdo não vem mais do disco; deixá-los cria configuração ambígua |
+| `try_files` | **removido**. Ele tentava resolver o caminho como arquivo local, o que não faz mais sentido |
+| `proxy_pass http://127.0.0.1:8080` | encaminha a requisição para a API. O endereço é o loopback onde o container foi publicado — o mesmo `127.0.0.1:8080` do `docker run` |
+
+Sobre a ausência de barra no final de `proxy_pass`: sem caminho no endereço, o
+URI da requisição é repassado **inteiro**, como veio. Com `/` no final
+(`http://127.0.0.1:8080/`), o prefixo casado pelo `location` seria
+**substituído** por esse caminho. Com `location /`, os dois se comportam igual;
+com `location /api/`, não. Vale causar a diferença uma vez para ver.
+
+Referências:
+- `proxy_pass` — https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_pass
+- Guia — https://nginx.org/en/docs/beginners_guide.html#proxy
+
+Aplicar:
+
+```bash
+sudo nginx -t
+sudo systemctl reload nginx
+curl localhost/health
+```
+
+Esperado: o JSON da API, agora atravessando o Nginx na porta 80.
+
+Do Windows:
+
+```powershell
+curl.exe http://<ip-publico>/health
+```
+
+Esperado: o mesmo JSON. **Objetivo funcional da POC cumprido.**
+
+### 3.2 Observar o que se perdeu — passo obrigatório
+
+Na VM:
+
+```bash
+docker logs poc-api --tail 20
+```
+
+Esperado neste momento: a origem de todas as requisições aparece como
+`127.0.0.1` — o próprio Nginx. Do ponto de vista da API, o tráfego do mundo
+inteiro vem do loopback.
+
+Nada quebrou. O `curl` funciona, a resposta está certa, e a informação sumiu em
+silêncio. É esta falha que a versão 2 corrige.
+
+### 3.3 `/etc/nginx/sites-available/poc-api` — versão 2, final
+
+```nginx
+server {
+    listen 80 default_server;
+
+    server_name _;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+
+        proxy_set_header Host            $host;
+        proxy_set_header X-Real-IP       $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+```
+
+| Linha | O que faz |
+|---|---|
+| `proxy_set_header Host $host` | repassa o host que o cliente pediu. `$host` é o `Host` da requisição original. Sem isso, a API acha que foi chamada em `127.0.0.1:8080`, o que quebra redirecionamentos, links absolutos e cookies com domínio |
+| `proxy_set_header X-Real-IP $remote_addr` | `$remote_addr` é o IP de quem abriu a conexão com o Nginx — o cliente real. Valor único, direto de consumir |
+| `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for` | a variável que **acumula**: pega o `X-Forwarded-For` que chegou e anexa `$remote_addr` ao final. Usar `$remote_addr` aqui, no lugar dela, sobrescreveria a cadeia |
+
+Referências:
+- `proxy_set_header` — https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_set_header
+- `$host`, `$remote_addr` — https://nginx.org/en/docs/http/ngx_http_core_module.html#variables
+- `$proxy_add_x_forwarded_for` — https://nginx.org/en/docs/http/ngx_http_proxy_module.html#var_proxy_add_x_forwarded_for
+
+Um quarto header, `X-Forwarded-Proto $scheme`, é comum nessa lista. Ele informa
+à aplicação se o cliente usou HTTP ou HTTPS, e só passa a importar quando TLS
+entrar — fora do escopo desta POC. Fica registrado para o projeto seguinte.
+
+Aplicar e conferir:
+
+```bash
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+Gerar tráfego **novo** do Windows — as linhas antigas do log continuarão
+mostrando `127.0.0.1`, porque foram geradas antes da mudança:
+
+```powershell
+curl.exe http://<ip-publico>/health
+```
+
+Na VM:
+
+```bash
+docker logs poc-api --tail 5
+```
+
+Esperado: o IP público da sua conexão.
+
+### 3.4 Versionar
+
+Atualize `nginx/poc-api.conf` no repositório com a versão 2 e commite.
 
 ---
 

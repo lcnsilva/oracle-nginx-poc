@@ -107,21 +107,105 @@ depois e trivial de evitar antes.
 
 ---
 
-## 3. Exercício
+## 3. Configuração anotada
 
-Siga a Tarefa 2 do plano. Em resumo:
+### 3.1 Gerar o par de chaves SSH (no Windows, PowerShell)
 
-1. Gerar o par de chaves SSH no Windows.
-2. Criar a VCN pelo assistente com conectividade à internet.
-3. Criar a instância `VM.Standard.E2.1.Micro` com Ubuntu Server, na subnet
-   **pública**, com IP público atribuído e a chave pública colada.
-4. Conectar por SSH — este passo precisa funcionar antes de qualquer outro.
-5. Criar 2 GB de swap em arquivo e torná-lo permanente via `/etc/fstab`.
-6. Instalar `git`, `curl` e Docker; adicionar o usuário `ubuntu` ao grupo
-   `docker`; reconectar.
+```powershell
+ssh-keygen -t ed25519 -f $env:USERPROFILE\.ssh\oci-poc-nginx
+```
 
-O usuário padrão das imagens Ubuntu na OCI é `ubuntu`. Não é `root`, nem
-`opc` (esse é o das imagens Oracle Linux).
+| Trecho | O que faz |
+|---|---|
+| `-t ed25519` | algoritmo da chave. Ed25519 é o padrão moderno recomendado: chaves curtas, rápidas e sem os parâmetros frágeis do RSA antigo |
+| `-f <caminho>` | onde salvar. Gera dois arquivos: `oci-poc-nginx` (privada) e `oci-poc-nginx.pub` (pública) |
+
+A passphrase pedida é opcional. Com passphrase, cada conexão exige digitá-la;
+sem, o arquivo sozinho dá acesso. Para uma POC descartável, vazio é aceitável —
+desde que a chave nunca saia da sua máquina.
+
+O conteúdo de `oci-poc-nginx.pub` é o que você cola no formulário da OCI.
+
+### 3.2 Criar a VCN
+
+Console da OCI: **Networking → Virtual Cloud Networks → Create VCN**, opção com
+conectividade à internet.
+
+O assistente cria de uma vez: a VCN, uma subnet pública, uma subnet privada, o
+Internet Gateway, o NAT Gateway e as tabelas de rota. Anote o nome da subnet
+**pública** — a Tarefa 6 volta nela para editar a Security List.
+
+Referência: https://docs.oracle.com/en-us/iaas/Content/Network/Tasks/managingVCNs.htm
+
+### 3.3 Criar a instância
+
+**Compute → Instances → Create Instance**:
+
+| Campo | Valor | Por quê |
+|---|---|---|
+| Image | Ubuntu Server | distribuição desta POC; muda os comandos de firewall |
+| Shape | `VM.Standard.E2.1.Micro` | marcado como *Always Free eligible* |
+| Subnet | a subnet **pública** | numa privada não existe IP público, e o campo some do formulário |
+| Assign a public IPv4 address | sim | sem ele não há endereço para acessar de fora |
+| SSH keys | colar o conteúdo de `oci-poc-nginx.pub` | vai para `~/.ssh/authorized_keys` dentro da VM |
+
+Anote o IP público atribuído. Ele aparece em toda validação daqui em diante.
+
+### 3.4 Primeiro acesso
+
+```powershell
+ssh -i $env:USERPROFILE\.ssh\oci-poc-nginx ubuntu@<ip-publico>
+```
+
+`-i` aponta a chave privada. O usuário é `ubuntu` — padrão das imagens Ubuntu
+na OCI. Não é `root`, nem `opc` (esse é das imagens Oracle Linux).
+
+A porta 22 já vem liberada nas duas camadas de firewall. Se este passo falhar,
+pare e resolva antes de continuar: daqui em diante, SSH é o único acesso à
+máquina.
+
+### 3.5 Criar 2 GB de swap
+
+```bash
+sudo fallocate -l 2G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
+| Linha | O que faz |
+|---|---|
+| `fallocate -l 2G /swapfile` | reserva 2 GB contíguos em disco, sem escrever zero byte a byte |
+| `chmod 600 /swapfile` | só o root lê e escreve. Swap contém memória de processos — permissão aberta expõe o conteúdo da RAM |
+| `mkswap /swapfile` | formata o arquivo como área de swap |
+| `swapon /swapfile` | ativa **agora**, em memória. Não sobrevive a reboot |
+| `echo ... >> /etc/fstab` | registra a montagem para o boot. É esta linha que torna o swap permanente |
+
+O `tee -a` é usado porque o redirecionamento `>>` seria executado pelo seu
+shell, não pelo `sudo` — e seu usuário não tem permissão de escrita em
+`/etc/fstab`.
+
+### 3.6 Instalar git, curl e Docker
+
+```bash
+sudo apt update
+sudo apt install -y git curl
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker ubuntu
+```
+
+| Linha | O que faz |
+|---|---|
+| `apt update` | atualiza o índice de pacotes. Sem isso, o `install` pode não encontrar versões atuais |
+| `apt install -y git curl` | `git` para clonar o repositório; `curl` para todas as validações |
+| `curl ... \| sudo sh` | script de conveniência oficial do Docker. Detecta a distribuição, adiciona o repositório e instala o Docker Engine |
+| `usermod -aG docker ubuntu` | adiciona o usuário ao grupo `docker`, permitindo usar `docker` sem `sudo`. O `-a` é obrigatório: sem ele, o usuário é **removido** dos demais grupos |
+
+Referência: https://docs.docker.com/engine/install/ubuntu/
+
+**Reconecte o SSH depois deste passo.** A adição ao grupo só vale em sessão
+nova.
 
 ---
 

@@ -23,20 +23,32 @@ veículo.
 - **Motivação:** entender manualmente, com Nginx, o que um proxy reverso com
   auto-discovery resolve automaticamente.
 
-## Modo de trabalho: tutoria
+## Modo de trabalho: guiado, com configuração anotada
 
-Claude atua como **tutor**. O usuário escreve todo o código e executa todos os
-comandos — incluindo a API NestJS e o Dockerfile.
+O usuário digita todo o código e executa todos os comandos. Claude entrega o
+conteúdo pronto — `nginx.conf`, `Dockerfile`, código NestJS, comandos de
+firewall — **anotado linha a linha**, com a seção da documentação oficial que
+justifica cada uma.
 
-Claude:
+Formato de toda entrega de configuração:
 
-- explica o conceito antes do exercício;
-- aponta a seção específica da documentação oficial;
-- descreve o que precisa acontecer, sem entregar o arquivo pronto;
-- revisa o que o usuário escreveu e questiona as escolhas.
+1. o arquivo ou comando completo, pronto para uso;
+2. logo abaixo, uma explicação por linha ou por bloco;
+3. o link direto da seção da documentação oficial que define aquela diretiva.
 
-Claude **não** escreve `nginx.conf`, `Dockerfile`, código NestJS nem comandos
-de firewall como gabarito a ser copiado.
+Nenhuma linha entra sem justificativa e sem fonte. Se uma diretiva não está na
+documentação oficial, isso é dito explicitamente no próprio arquivo.
+
+**Ressalva de procedência.** Nginx e OCI têm documentação oficial com exemplos
+de configuração e comandos, citáveis seção por seção. O NestJS não publica
+Dockerfile oficial: o Dockerfile desta POC é composto a partir do guia de
+multi-stage build do Docker, e o arquivo da apostila marca isso como derivado,
+não como transcrição.
+
+Ao fim de cada fase, Claude questiona as escolhas de configuração. Digitar um
+arquivo correto sem saber o que cada linha faz é o resultado que esta POC
+existe para evitar; a anotação e a arguição são o que separa uma coisa da
+outra.
 
 ## Estratégia: um suspeito por vez
 
@@ -121,7 +133,8 @@ arquivo segue a mesma estrutura:
 
 1. **Conceito** — o que é e por que existe
 2. **Referência oficial** — link direto para a seção
-3. **Exercício** — o que precisa acontecer, sem gabarito
+3. **Configuração anotada** — o arquivo ou comando pronto, com explicação linha
+   a linha e a fonte oficial de cada diretiva
 4. **Como validar** — comando exato e saída esperada
 5. **Armadilhas** — o que costuma dar errado
 
@@ -213,11 +226,15 @@ API perdeu a informação de quem chamou.
 
 ### De aprendizado
 
-Nenhuma fase fecha apenas com o comando passando. Ao fim de cada uma, o usuário
-apresenta o que escreveu e Claude questiona as escolhas: por que aquele
-`location`, o que muda sem `proxy_set_header Host`, qual a diferença entre
-`nginx -s reload` e `nginx -s quit`. Configuração funcionando por acidente é o
-resultado que esta POC existe para evitar.
+Nenhuma fase fecha apenas com o comando passando. Ao fim de cada uma, Claude
+questiona as escolhas da configuração que o usuário acabou de aplicar: por que
+aquele `location`, o que muda sem `proxy_set_header Host`, qual a diferença
+entre `nginx -s reload` e `nginx -s quit`, o que aconteceria com `-A` no lugar
+de `-I`.
+
+Como a configuração é entregue pronta, esta é a única barreira contra o
+copiar-e-colar. Ela não é opcional: uma fase só fecha quando o comando passa
+**e** o usuário explica o que digitou.
 
 ## Fora de escopo
 
