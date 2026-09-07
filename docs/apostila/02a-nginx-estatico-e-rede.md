@@ -178,8 +178,23 @@ antes do pacote tocar a VM. Você a configura pelo Console web.
 surpreende quem espera uma máquina "limpa": você não instalou firewall nenhum,
 e há um firewall.
 
-As duas precisam permitir a porta 80. Abrir uma só produz **exatamente o mesmo
-sintoma** de não abrir nenhuma: timeout. Não há mensagem distinguindo os casos.
+As duas precisam permitir a porta 80. Abrir uma só continua produzindo falha —
+mas, nesta imagem, **a mensagem de erro muda**, e a mudança é informativa:
+
+| Estado | Quem bloqueia | Como bloqueia | Sintoma esperado |
+|---|---|---|---|
+| nenhuma aberta | Security List | descarta em silêncio | `timeout` |
+| só a Security List aberta | iptables | `REJECT --reject-with icmp-host-prohibited` | `No route to host` |
+| as duas abertas | ninguém | — | a resposta do Nginx |
+
+A diferença vem de *como* cada camada nega. Descartar calado (`DROP`) produz
+silêncio, e silêncio vira timeout. Responder com erro (`REJECT`) produz uma
+mensagem, e a mensagem chega ao cliente.
+
+Vale como previsão, não como garantia: se o erro ICMP for filtrado em algum
+ponto do caminho de volta, o segundo caso também aparece como timeout. Observe
+o que de fato acontece — a transição de `timeout` para `No route to host` é a
+evidência de que a camada 1 passou a permitir e a camada 2 assumiu o bloqueio.
 
 É daí que vem a estratégia deste plano: abrir as duas camadas enquanto o Nginx
 ainda serve um arquivo estático já validado localmente. Assim, quando o acesso
@@ -389,9 +404,20 @@ correspondente.
 
 Referência: https://docs.oracle.com/en-us/iaas/Content/Network/Concepts/securitylists.htm
 
-**Teste de novo do Windows. Esperado: ainda timeout.** Não é erro seu — é a
-camada 2 bloqueando. É exatamente aqui que a maioria conclui que a Security
-List não funcionou e vai mexer no lugar errado.
+**Teste de novo do Windows. Esperado: ainda falha** — mas repare na mensagem.
+
+Antes desta regra, o erro era `timeout`: a Security List descartava o pacote em
+silêncio. Agora o pacote chega na VM e é o iptables que nega, com
+`REJECT --reject-with icmp-host-prohibited` — uma negativa que **responde**.
+O erro esperado passa a ser `No route to host`.
+
+Se a mensagem mudou, a camada 1 está funcionando e a camada 2 assumiu o
+bloqueio. Se continuar timeout, o erro ICMP pode ter sido filtrado no caminho
+de volta — possível, e não invalida o passo.
+
+É exatamente aqui que a maioria conclui que a Security List não funcionou e vai
+mexer no lugar errado. Anote qual dos dois sintomas você viu; ele é a evidência
+de qual camada está negando.
 
 ### 3.4 Camada 2 — iptables
 
