@@ -24,10 +24,10 @@ Diferente dos outros documentos do repositório:
 | 1 | 3 — API NestJS local | ✅ concluída |
 | 1 | 4 — Dockerfile e deploy na VM | ✅ concluída |
 | 2A | 5 — Nginx servindo estático | ✅ concluída |
-| 2A | 6 — Abrir a porta 80 nas duas camadas | 🔄 próxima |
-| 2B | 7 — Proxy reverso | ⬜ não iniciada |
+| 2A | 6 — Abrir a porta 80 nas duas camadas | ✅ concluída |
+| 2B | 7 — Proxy reverso | 🔄 próxima |
 
-**Próximo passo:** Tarefa 6 — abrir a porta 80 na Security List e no iptables.
+**Próximo passo:** Tarefa 7 — trocar o conteúdo estático por `proxy_pass`.
 
 Ideias levantadas fora do escopo estão em [`backlog.md`](backlog.md).
 
@@ -389,6 +389,91 @@ só a Security List — será verificada na Tarefa 6.
 
 ---
 
+## Tarefa 6 — Abrir a porta 80 nas duas camadas ✅
+
+Material: [`apostila/02a-nginx-estatico-e-rede.md`](apostila/02a-nginx-estatico-e-rede.md)
+
+Executada em duas partes: a camada 1 primeiro, reversível por um clique; a
+camada 2 depois, com o protocolo de proteção completo.
+
+### Parte 1 — Security List
+
+Regra de Ingress adicionada: `CIDR`, `0.0.0.0/0`, `TCP`, Source Port `All`,
+Destination Port `80`, stateful.
+
+Caminho no console: **Networking → VCNs → `nginx-vcn-poc` → Subnets →
+`subnet-publica-poc` → Security Lists**. O plano original mandava chegar pela
+instância — útil apenas quando não se sabe qual subnet a instância usa.
+
+**Depois da regra, o acesso externo continuou dando `timeout`, com a mesma
+mensagem de antes.** Foi aqui que a previsão registrada em `de8266a` caiu.
+
+### O diagnóstico que resolveu
+
+Duas evidências, na VM.
+
+**Como o iptables nega:**
+
+```
+5    REJECT  0  --  0.0.0.0/0  0.0.0.0/0  reject-with icmp-host-prohibited
+```
+
+`REJECT`, não `DROP`. Em tese responde com erro ICMP.
+
+**Se o pacote chega**, com `sudo tcpdump -ni ens3 tcp port 80` rodando durante
+a requisição:
+
+```
+177.16.235.121.64798 > 10.0.0.215.80: Flags [S], seq 1825709202
+177.16.235.121.64798 > 10.0.0.215.80: Flags [S], seq 1825709202
+177.16.235.121.64798 > 10.0.0.215.80: Flags [S], seq 1825709202
+```
+
+O SYN chegando e sendo retransmitido três vezes — nenhuma resposta voltou.
+Prova de que a Security List estava aberta e o bloqueio era interno.
+
+Conclusão: o `REJECT` responde, mas o ICMP não sobrevive ao caminho de volta.
+As duas camadas produzem o mesmo `timeout`. **`tcpdump` é o que distingue**, não
+a mensagem de erro — porque não depende de o ICMP chegar.
+
+### Parte 2 — iptables
+
+Protocolo seguido na íntegra: backup com `iptables-save`, segunda sessão SSH
+mantida aberta, inserção da regra, teste de acesso numa terceira sessão antes
+de qualquer outra verificação.
+
+```bash
+sudo iptables -I INPUT 5 -m state --state NEW -p tcp --dport 80 -j ACCEPT
+sudo netfilter-persistent save
+```
+
+Ordem resultante — a regra do SSH permanece intocada na posição 4:
+
+```
+4    ACCEPT  6  --  state NEW tcp dpt:22
+5    ACCEPT  6  --  state NEW tcp dpt:80
+6    REJECT  0  --  reject-with icmp-host-prohibited
+```
+
+### Checkpoint
+
+- [x] `curl.exe http://129.159.50.172` do Windows devolve o `index.html`
+- [x] Regra do SSH preservada
+- [x] Após `sudo reboot`, tudo volta sozinho
+
+Estado pós-reboot, sem nenhuma intervenção:
+
+```
+5    ACCEPT  6  --  state NEW tcp dpt:80          ← netfilter-persistent
+poc-api   Up 36 seconds   127.0.0.1:8080->8080/tcp ← --restart unless-stopped
+curl localhost:8080/health → {"status":"ok"}
+curl localhost             → index.html            ← serviço do Nginx no boot
+```
+
+Cada um volta por um mecanismo diferente, configurado em uma tarefa diferente.
+
+---
+
 ## Correções feitas no material durante a execução
 
 O material foi escrito antes da execução e mudou por causa dela. Registro do
@@ -400,7 +485,9 @@ que mudou e por quê:
 | `b7693bf` | removido o passo que pedia ao usuário validar se a apostila ensinava bem | avaliação impossível para quem ainda não conhece o assunto |
 | `8a27d82` | apostila 00 reescrita para o caminho manual de criação da rede, com os campos de CIDR | o assistente não foi usado, e o caminho manual expõe as peças que a POC quer ensinar |
 | `8a27d82` | documentados `Connection refused` x `timeout`, seção *Security* e VNIC do formulário, e o IP público invisível dentro do Ubuntu | dúvidas e erros reais encontrados na execução |
-| `de8266a` | corrigida a previsão de sintoma das duas camadas de firewall | a apostila afirmava sintoma idêntico; a Security List descarta (timeout) e o iptables da imagem responde com `REJECT` (`No route to host`) |
+| `de8266a` | previsão de que o sintoma mudaria de `timeout` para `No route to host` ao abrir só a Security List | a Security List descarta em silêncio e o iptables da imagem nega com `REJECT`, que responde |
+| `ba1ab65` | **previsão revertida** — o sintoma não muda | verificado na Tarefa 6: o ICMP do `REJECT` é filtrado no retorno e o cliente continua vendo `timeout`. A afirmação original da apostila estava certa; `de8266a` corrigiu um acerto. `tcpdump` passou a ser documentado como a evidência confiável |
+| `b21ec7f` | reload com configuração inválida **não** derruba o serviço | o mestre rejeita a config nova e segue com a antiga; o risco real é a mudança não ser aplicada em silêncio. Quem cai é `systemctl restart` |
 | `5675e2f` | `Dockerfile` de `node:22-alpine` para `node:24-alpine` | alinhar com o Node v24 instalado na máquina de desenvolvimento |
 | — | documentar o `git init` aninhado do `nest new` | encontrado ao tentar commitar `api/`; ver Tarefa 3 acima |
 
