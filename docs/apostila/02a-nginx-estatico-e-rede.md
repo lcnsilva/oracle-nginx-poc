@@ -208,23 +208,42 @@ antes do pacote tocar a VM. Você a configura pelo Console web.
 surpreende quem espera uma máquina "limpa": você não instalou firewall nenhum,
 e há um firewall.
 
-As duas precisam permitir a porta 80. Abrir uma só continua produzindo falha —
-mas, nesta imagem, **a mensagem de erro muda**, e a mudança é informativa:
+As duas precisam permitir a porta 80. Abrir uma só produz **exatamente o mesmo
+sintoma** de não abrir nenhuma: `timeout`. Não há mensagem distinguindo os
+casos.
 
-| Estado | Quem bloqueia | Como bloqueia | Sintoma esperado |
-|---|---|---|---|
-| nenhuma aberta | Security List | descarta em silêncio | `timeout` |
-| só a Security List aberta | iptables | `REJECT --reject-with icmp-host-prohibited` | `No route to host` |
-| as duas abertas | ninguém | — | a resposta do Nginx |
+| Estado | Quem bloqueia | Sintoma observado |
+|---|---|---|
+| nenhuma aberta | Security List | `timeout` |
+| só a Security List aberta | iptables | `timeout` |
+| as duas abertas | ninguém | a resposta do Nginx |
 
-A diferença vem de *como* cada camada nega. Descartar calado (`DROP`) produz
-silêncio, e silêncio vira timeout. Responder com erro (`REJECT`) produz uma
-mensagem, e a mensagem chega ao cliente.
+Isso surpreende quem conhece a mecânica, porque as duas camadas negam de
+formas diferentes. A Security List **descarta** o pacote em silêncio. O
+iptables da imagem Ubuntu nega com `REJECT --reject-with icmp-host-prohibited`,
+que **responde** com um erro ICMP — em tese, `No route to host` no cliente.
 
-Vale como previsão, não como garantia: se o erro ICMP for filtrado em algum
-ponto do caminho de volta, o segundo caso também aparece como timeout. Observe
-o que de fato acontece — a transição de `timeout` para `No route to host` é a
-evidência de que a camada 1 passou a permitir e a camada 2 assumiu o bloqueio.
+Na prática, esse ICMP não chega. Verificado nesta POC: com a Security List
+aberta e o iptables ainda fechado, o cliente continuou vendo `timeout`, e o
+`tcpdump` na VM mostrava o SYN chegando e sendo retransmitido três vezes. O
+erro ICMP é filtrado em algum ponto do caminho de volta.
+
+**A lição prática:** não tente distinguir as camadas pela mensagem de erro. O
+que distingue é olhar se o pacote chegou:
+
+```bash
+sudo tcpdump -ni ens3 tcp port 80
+```
+
+Com isso rodando, dispare a requisição do cliente:
+
+| O que aparece | Conclusão |
+|---|---|
+| linhas `Flags [S]` vindas do seu IP | o pacote chega — a Security List está aberta, quem nega é o iptables |
+| silêncio | o pacote não chega — a Security List ainda bloqueia |
+
+Essa evidência não depende de o ICMP sobreviver ao retorno, e por isso é
+confiável.
 
 É daí que vem a estratégia deste plano: abrir as duas camadas enquanto o Nginx
 ainda serve um arquivo estático já validado localmente. Assim, quando o acesso
@@ -434,20 +453,38 @@ correspondente.
 
 Referência: https://docs.oracle.com/en-us/iaas/Content/Network/Concepts/securitylists.htm
 
-**Teste de novo do Windows. Esperado: ainda falha** — mas repare na mensagem.
+**Teste de novo do Windows. Esperado: ainda `timeout`, com a mesma mensagem de
+antes.**
 
-Antes desta regra, o erro era `timeout`: a Security List descartava o pacote em
-silêncio. Agora o pacote chega na VM e é o iptables que nega, com
-`REJECT --reject-with icmp-host-prohibited` — uma negativa que **responde**.
-O erro esperado passa a ser `No route to host`.
+A regra funcionou; o que bloqueia agora é a camada 2. Mas o sintoma é idêntico
+ao de antes, e é exatamente aqui que a maioria conclui que a Security List não
+funcionou e vai mexer no lugar errado — desfazendo uma configuração correta.
 
-Se a mensagem mudou, a camada 1 está funcionando e a camada 2 assumiu o
-bloqueio. Se continuar timeout, o erro ICMP pode ter sido filtrado no caminho
-de volta — possível, e não invalida o passo.
+Para confirmar que a camada 1 abriu, não olhe a mensagem de erro: olhe se o
+pacote chega. Na VM:
 
-É exatamente aqui que a maioria conclui que a Security List não funcionou e vai
-mexer no lugar errado. Anote qual dos dois sintomas você viu; ele é a evidência
-de qual camada está negando.
+```bash
+sudo apt install -y tcpdump
+sudo tcpdump -ni ens3 tcp port 80
+```
+
+Com isso rodando, dispare a requisição do Windows. A saída esperada:
+
+```
+177.16.235.121.64798 > 10.0.0.215.80: Flags [S], seq ..., length 0
+177.16.235.121.64798 > 10.0.0.215.80: Flags [S], seq ..., length 0
+177.16.235.121.64798 > 10.0.0.215.80: Flags [S], seq ..., length 0
+```
+
+O SYN do seu IP chegando, e repetido: retransmissão de TCP, porque nenhuma
+resposta voltou. Prova de que o pacote atravessou a Security List e morreu
+dentro da VM.
+
+Silêncio total no `tcpdump` significaria o contrário — o pacote não chegou, e a
+Security List ainda está bloqueando.
+
+Ruído esperado na captura: conversas com `169.254.169.254`, o serviço de
+metadados da instância. `Ctrl+C` para sair.
 
 ### 3.4 Camada 2 — iptables
 
