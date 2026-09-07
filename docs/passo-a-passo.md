@@ -21,13 +21,13 @@ Diferente dos outros documentos do repositório:
 |---|---|---|
 | — | 1 — Repositório e apostila | ✅ concluída |
 | 0 | 2 — Provisionamento da VM na OCI | ✅ concluída |
-| 1 | 3 — API NestJS local | 🔄 passos 1–3 feitos, 4–7 pendentes |
-| 1 | 4 — Dockerfile e deploy na VM | ⬜ não iniciada |
+| 1 | 3 — API NestJS local | ✅ concluída |
+| 1 | 4 — Dockerfile e deploy na VM | 🔄 próxima |
 | 2A | 5 — Nginx servindo estático | ⬜ não iniciada |
 | 2A | 6 — Abrir a porta 80 nas duas camadas | ⬜ não iniciada |
 | 2B | 7 — Proxy reverso | ⬜ não iniciada |
 
-**Próximo passo:** Tarefa 3, passo 4 — escrever `api/src/app.controller.ts`.
+**Próximo passo:** Tarefa 4, passo 1 — escrever `api/.dockerignore`.
 
 ---
 
@@ -188,37 +188,63 @@ com `docker run hello-world`, que rodou sem `sudo`.
 
 ---
 
-## Tarefa 3 — API NestJS local 🔄
+## Tarefa 3 — API NestJS local ✅
 
 Material: [`apostila/01-api-nestjs-docker.md`](apostila/01-api-nestjs-docker.md)
 
-### Critério de aceitação definido
+### Critério de aceitação definido antes do código
 
 ```
 GET /health  →  {"status":"ok"}
 GET /info    →  {"name":"poc-api","version":"1.0.0","uptime":<segundos>}
 ```
 
-### Feito
+### Executado
 
-- [x] **Passo 1** — critério de aceitação escrito (acima)
-- [x] **Passo 2** — projeto criado com `npx @nestjs/cli new api`, gerenciador npm
-- [x] **Passo 3** — `npm run start` + `curl.exe http://localhost:3000/health`
-      retornando 404, confirmando que o servidor sobe e o `curl.exe` funciona
-      antes de haver código a testar
+1. **Critério escrito** antes de qualquer implementação (acima).
+2. **Projeto criado** com `npx @nestjs/cli new api`, gerenciador npm.
+3. **Falha observada antes da implementação:** `npm run start` +
+   `curl.exe http://localhost:3000/health` retornando 404. Confirma que o
+   servidor sobe e que o `curl.exe` funciona, antes de haver código a testar —
+   separa "meu código está errado" de "meu comando está errado".
+4. **`api/src/app.controller.ts`** escrito com os dois endpoints.
+5. **`api/src/main.ts`** alterado para `await app.listen(8080, '0.0.0.0')`.
+6. **Validado** na porta 8080.
+7. **Commit** `33dd27f`.
 
-### Pendente
-
-- [ ] **Passo 4** — escrever `api/src/app.controller.ts` com `/health` e `/info`
-- [ ] **Passo 5** — em `api/src/main.ts`, trocar o `listen` para
-      `app.listen(8080, '0.0.0.0')`
-- [ ] **Passo 6** — validar os dois endpoints na porta 8080, e confirmar que a
-      3000 passou a recusar conexão
-- [ ] **Passo 7** — commit
-
-O código dos passos 4 e 5 está anotado linha a linha em
+Código anotado linha a linha em
 [`apostila/01-api-nestjs-docker.md`](apostila/01-api-nestjs-docker.md),
 seções 3.1 e 3.2.
+
+### Saída da validação
+
+```
+curl.exe http://localhost:8080/health
+{"status":"ok"}
+
+curl.exe http://localhost:8080/info
+{"name":"poc-api","version":"1.0.0","uptime":139}
+```
+
+Bate exatamente com o critério de aceitação.
+
+### Desvio encontrado: repositório git aninhado
+
+O `nest new` roda `git init` dentro de `api/`, criando um repositório aninhado.
+O git da raiz recusa indexar esse diretório:
+
+```
+error: 'api/' does not have a commit checked out
+```
+
+O repositório aninhado tinha zero commits — nada a preservar. Resolvido com:
+
+```powershell
+Remove-Item -Recurse -Force api\.git
+```
+
+A partir daí `api/` passou a pertencer ao repositório principal, que é o que o
+plano prevê: a VM clona um repositório só.
 
 ---
 
@@ -234,7 +260,8 @@ que mudou e por quê:
 | `8a27d82` | apostila 00 reescrita para o caminho manual de criação da rede, com os campos de CIDR | o assistente não foi usado, e o caminho manual expõe as peças que a POC quer ensinar |
 | `8a27d82` | documentados `Connection refused` x `timeout`, seção *Security* e VNIC do formulário, e o IP público invisível dentro do Ubuntu | dúvidas e erros reais encontrados na execução |
 | `de8266a` | corrigida a previsão de sintoma das duas camadas de firewall | a apostila afirmava sintoma idêntico; a Security List descarta (timeout) e o iptables da imagem responde com `REJECT` (`No route to host`) |
-| pendente | `Dockerfile` de `node:22-alpine` para `node:24-alpine` | alinhar com o Node v24 instalado na máquina de desenvolvimento |
+| `5675e2f` | `Dockerfile` de `node:22-alpine` para `node:24-alpine` | alinhar com o Node v24 instalado na máquina de desenvolvimento |
+| — | documentar o `git init` aninhado do `nest new` | encontrado ao tentar commitar `api/`; ver Tarefa 3 acima |
 
 ### A verificar na Tarefa 6
 
