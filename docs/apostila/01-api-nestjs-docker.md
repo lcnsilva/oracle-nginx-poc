@@ -196,7 +196,7 @@ Referência: https://docs.nestjs.com/first-steps
 
 ```dockerfile
 # --- Estágio 1: build ---
-FROM node:22-alpine AS builder
+FROM node:24-alpine AS builder
 
 WORKDIR /app
 
@@ -207,7 +207,7 @@ COPY . .
 RUN npm run build
 
 # --- Estágio 2: runtime ---
-FROM node:22-alpine
+FROM node:24-alpine
 
 WORKDIR /app
 ENV NODE_ENV=production
@@ -223,13 +223,13 @@ CMD ["node", "dist/main.js"]
 
 | Linha | O que faz |
 |---|---|
-| `FROM node:22-alpine AS builder` | imagem base do primeiro estágio. `alpine` é uma distribuição mínima — imagem muito menor. `AS builder` nomeia o estágio para ser referenciado depois |
+| `FROM node:24-alpine AS builder` | imagem base do primeiro estágio. `alpine` é uma distribuição mínima — imagem muito menor. `AS builder` nomeia o estágio para ser referenciado depois |
 | `WORKDIR /app` | define o diretório de trabalho e o cria. Substitui um `mkdir` + `cd` |
 | `COPY package*.json ./` | copia **só** os manifestos, antes do código. Enquanto as dependências não mudarem, o Docker reaproveita a camada do `npm ci` em builds seguintes |
 | `RUN npm ci` | instala exatamente o que está no `package-lock.json`. Diferente de `npm install`, não atualiza o lock — build reproduzível |
 | `COPY . .` | agora sim o código-fonte. Fica depois do `npm ci` de propósito: mudar o código não invalida a camada de dependências |
 | `RUN npm run build` | compila o TypeScript para `dist/` |
-| `FROM node:22-alpine` (2ª vez) | começa uma imagem nova, do zero. Nada do estágio anterior vem junto, exceto o que for copiado explicitamente |
+| `FROM node:24-alpine` (2ª vez) | começa uma imagem nova, do zero. Nada do estágio anterior vem junto, exceto o que for copiado explicitamente |
 | `ENV NODE_ENV=production` | sinaliza modo produção para o Node e para bibliotecas que consultam essa variável |
 | `npm ci --omit=dev` | instala só dependências de produção. TypeScript, ESLint e o CLI do Nest ficam de fora |
 | `npm cache clean --force` | remove o cache do npm da camada final. Sem isso, o cache vai junto na imagem |
@@ -237,10 +237,14 @@ CMD ["node", "dist/main.js"]
 | `EXPOSE 8080` | documenta a porta usada. **Não publica nada** — publicar é papel do `-p` no `docker run` |
 | `CMD ["node", "dist/main.js"]` | comando de início. Forma com colchetes (*exec form*) executa o binário direto, sem shell intermediário, o que faz o sinal de parada do Docker chegar ao Node |
 
-Sobre a versão fixada: `node:22-alpine` é uma linha LTS. Fixar a versão maior
-evita que um build futuro troque de Node sem aviso. Se a sua VM for ARM
-(shape Ampere), a mesma tag funciona — a imagem oficial do Node publica
-`arm64`.
+Sobre a versão fixada: `node:24-alpine` é uma linha LTS, escolhida por
+coincidir com o Node instalado na máquina de desenvolvimento (`node --version`
+local: v24). Manter as duas iguais elimina uma variável quando algo funcionar
+localmente e falhar no container.
+
+Fixar a versão maior também evita que um build futuro troque de Node sem aviso.
+Se a sua VM for ARM (shape Ampere), a mesma tag funciona — a imagem oficial do
+Node publica `arm64`.
 
 ### 3.4 `api/.dockerignore`
 
