@@ -114,14 +114,44 @@ conexões em andamento.
 `reload` é o que você usa depois de cada edição. `quit` é para desligar de
 verdade. `stop` é para emergência.
 
-**No Ubuntu há uma camada a mais:** o Nginx é gerenciado pelo systemd, e o
-comando idiomático passa a ser `sudo systemctl reload nginx`, que por baixo
-envia o mesmo sinal. Os dois funcionam. Saber que `systemctl reload` é um
-invólucro de `nginx -s reload` evita a confusão de achar que são mecanismos
-diferentes.
+**O mecanismo do reload.** O Nginx roda como um processo mestre e vários
+workers. No reload, o mestre lê a configuração nova e sobe workers novos com
+ela. Os workers antigos param de aceitar conexões, terminam as requisições que
+já estavam atendendo e encerram. O mestre permanece o tempo todo.
 
-**`nginx -t` antes de todo reload.** Recarregar com sintaxe inválida é uma das
-poucas formas de derrubar o serviço por descuido.
+```
+antes:    master ──> workers antigos (configuração antiga)
+reload:   master ──> workers NOVOS   (configuração nova)  ← atendem o que chega agora
+                 └─> workers antigos ← terminam o que já estava em curso e morrem
+```
+
+Nenhuma requisição em andamento é cortada, e não há janela de indisponibilidade.
+É esse o motivo de o comando existir.
+
+Duas confusões comuns:
+
+- **A configuração é recarregada inteira, sempre.** Não existe recarga seletiva
+  por site: todos os `server` blocks são relidos juntos.
+- **`quit` não é "reiniciar".** É o desligamento educado — para de aceitar,
+  termina o que está em curso, encerra. Quem corta conexão é o `stop`.
+
+**No Ubuntu há uma camada a mais:** o Nginx é gerenciado pelo systemd, e o
+comando idiomático passa a ser `sudo systemctl reload nginx`. Ele não é outra
+coisa: a unidade do serviço define `ExecReload` apontando para `nginx -s reload`.
+Mesmo mecanismo, invólucro diferente. Quem reinicia o processo do zero é
+`systemctl restart`, esse sim distinto.
+
+**`nginx -t` antes de todo reload — mas pelo motivo certo.** Um reload com
+sintaxe inválida **não derruba o serviço**: o mestre testa a configuração nova
+antes de aplicá-la, registra o erro no log e segue rodando com a antiga.
+
+O risco é outro, e pior de diagnosticar: sua mudança simplesmente não é
+aplicada. O comando volta sem erro visível, você testa e encontra o
+comportamento antigo, e vai procurar o problema na configuração — que está
+correta no arquivo e nunca foi carregada. Falha silenciosa, não catastrófica.
+
+Quem cai com configuração inválida é `systemctl restart`: aí o Nginx tenta
+subir do zero, falha, e o serviço fica fora.
 
 Referência: https://nginx.org/en/docs/beginners_guide.html#control
 
@@ -601,7 +631,11 @@ Alias de `Invoke-WebRequest`. Use `curl.exe`. E use `--max-time`, ou você fica
 esperando o timeout padrão sem saber se travou.
 
 **Recarregar sem `nginx -t`.**
-Sintaxe inválida derruba o serviço no reload. `nginx -t` custa um segundo.
+Sintaxe inválida **não** derruba o serviço: o mestre rejeita a configuração
+nova e segue com a antiga. O problema é que sua mudança não é aplicada, o
+comando não reclama, e você vai depurar uma configuração correta que nunca foi
+carregada. `nginx -t` custa um segundo e transforma falha silenciosa em erro
+visível.
 
 ---
 
