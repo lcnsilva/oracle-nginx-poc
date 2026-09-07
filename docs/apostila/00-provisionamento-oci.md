@@ -126,16 +126,121 @@ desde que a chave nunca saia da sua máquina.
 
 O conteúdo de `oci-poc-nginx.pub` é o que você cola no formulário da OCI.
 
-### 3.2 Criar a VCN
+### 3.2 Criar a rede
 
-Console da OCI: **Networking → Virtual Cloud Networks → Create VCN**, opção com
-conectividade à internet.
+Console da OCI: **Networking → Virtual Cloud Networks**. Há dois caminhos.
 
-O assistente cria de uma vez: a VCN, uma subnet pública, uma subnet privada, o
-Internet Gateway, o NAT Gateway e as tabelas de rota. Anote o nome da subnet
-**pública** — a Tarefa 6 volta nela para editar a Security List.
+**Assistente** (*Create VCN with Internet Connectivity*): cria de uma vez a VCN,
+uma subnet pública, uma subnet privada, o Internet Gateway, o NAT Gateway e as
+tabelas de rota. Rápido, e esconde exatamente as peças que interessam aqui.
 
-Referência: https://docs.oracle.com/en-us/iaas/Content/Network/Tasks/managingVCNs.htm
+**Manual** (*Create VCN*): cria só a VCN. As outras peças você monta uma a uma —
+e é o caminho recomendado nesta POC, porque cada peça aparece explicitamente.
+
+O manual é o descrito abaixo.
+
+#### 3.2.1 A VCN
+
+| Campo | Valor | O que significa |
+|---|---|---|
+| Name | `nginx-vcn-poc` | — |
+| Compartment | a raiz da sua conta | divisão lógica com controle de acesso — pense em pasta com permissões |
+| IPv4 CIDR Block | `10.0.0.0/16` | a faixa de endereços **privados** da rede. 65.536 endereços, de `10.0.0.0` a `10.0.255.255` |
+| IPv6 | não atribuir | fora de escopo |
+
+Lendo `10.0.0.0/16`: os primeiros 16 bits (`10.0`) são fixos, o resto varia. As
+faixas privadas válidas são `10.0.0.0/8`, `172.16.0.0/12` e `192.168.0.0/16`; o
+`10.x` é convenção em nuvem por ser a maior.
+
+O valor só importaria se esta VCN fosse conectada a outra rede — outra VCN, ou
+a rede de uma empresa por VPN. Faixas iguais dos dois lados colidem e o
+roteamento quebra. Em rede isolada, qualquer faixa privada serve.
+
+Neste ponto a VCN existe e não tem nem onde colocar máquina, nem caminho para
+fora. As três etapas seguintes resolvem isso, **nesta ordem** — cada formulário
+referencia o anterior por nome.
+
+#### 3.2.2 Internet Gateway
+
+Painel de recursos da VCN → **Internet Gateways → Create Internet Gateway**.
+
+Nome: `igw-poc`.
+
+É o roteador virtual que liga a VCN à internet pública, nos dois sentidos. O
+NAT Gateway, por contraste, só deixa a máquina **iniciar** conexão para fora —
+serve para um banco de dados que consulta a internet mas não pode ser
+alcançado. Um servidor web precisa de Internet Gateway.
+
+Criar o gateway não roteia nada ainda.
+
+#### 3.2.3 Regra de rota
+
+**Route Tables → Default Route Table for `<nome-da-vcn>` → Add Route Rules**.
+
+| Campo | Valor |
+|---|---|
+| Target Type | `Internet Gateway` |
+| Destination CIDR Block | `0.0.0.0/0` |
+| Target | `igw-poc` |
+
+Uma route table responde "pacote com destino X sai por onde?". `0.0.0.0/0` não
+fixa bit nenhum: casa com qualquer endereço. É a rota padrão.
+
+O roteamento **dentro** da VCN é implícito: qualquer endereço em `10.0.0.0/16`
+já é alcançável, sem aparecer na tabela e sem poder ser removido. Quando várias
+rotas casam, vence a mais específica — então tráfego interno nunca vai para o
+gateway, sem você escrever exceção.
+
+> **Confusão comum.** O `Destination CIDR Block` é o destino do pacote que
+> **sai**, não a origem de quem entra. Restringir quem pode acessar a VM é
+> papel da Security List, não da route table. Colocar o seu IP aqui isolaria a
+> VM da internet inteira — `apt`, `git clone` e `docker build` parariam de
+> funcionar.
+
+#### 3.2.4 Subnet pública
+
+**Subnets → Create Subnet**.
+
+| Campo | Valor | O que significa |
+|---|---|---|
+| Name | `subnet-publica-poc` | — |
+| Subnet Type | `Regional` | vale em toda a região. A alternativa prende a subnet a um único domínio de disponibilidade |
+| IPv4 CIDR Block | `10.0.0.0/24` | 256 endereços. A OCI reserva os dois primeiros e o último: sobram 253 |
+| Route Table | a que você editou em 3.2.3 | **é esta escolha que dá saída para a internet** |
+| Subnet Access | `Public Subnet` | permite atribuir IP público. Em `Private Subnet` o campo some do formulário da instância |
+| DHCP Options | Default | entrega DNS e domínio de busca automaticamente |
+| Security List | a Default da VCN | já libera ingress na porta 22 e todo egress |
+
+A subnet é a unidade onde instâncias existem — máquina não fica "na VCN".
+Route table, security lists e permissão de IP público são configurados **nela**,
+não na máquina. Duas VMs idênticas em subnets diferentes se comportam de forma
+completamente diferente.
+
+#### 3.2.5 O caminho montado
+
+```
+internet
+   │
+   ▼
+Internet Gateway            ← 3.2.2: existe uma porta
+   │
+   ▼
+Route Table (0.0.0.0/0)     ← 3.2.3: alguém aponta para ela
+   │
+   ▼
+Subnet pública              ← 3.2.4: onde a máquina vive
+   │
+   ▼
+instância (IP público)
+```
+
+Falta uma peça e o tráfego não chega, sem mensagem dizendo qual. É a mesma
+lógica das duas camadas de firewall da seção 1.7 da apostila 02a.
+
+Referências:
+- VCNs e subnets — https://docs.oracle.com/en-us/iaas/Content/Network/Tasks/managingVCNs.htm
+- Route tables — https://docs.oracle.com/en-us/iaas/Content/Network/Tasks/managingroutetables.htm
+- Internet Gateway — https://docs.oracle.com/en-us/iaas/Content/Network/Tasks/managingIGs.htm
 
 ### 3.3 Criar a instância
 
@@ -151,6 +256,25 @@ Referência: https://docs.oracle.com/en-us/iaas/Content/Network/Tasks/managingVC
 
 Anote o IP público atribuído. Ele aparece em toda validação daqui em diante.
 
+Dois campos do formulário que costumam gerar dúvida:
+
+**Seção "Security".** Deixe tudo desmarcado. Ela contém *Shielded Instance*
+(Secure Boot, Measured Boot, TPM) e *Confidential Computing* — proteções de
+firmware e de memória, disponíveis apenas em shapes maiores. Nenhuma tem
+relação com rede: quem controla o acesso à VM é a Security List da subnet mais
+o iptables da apostila 02a. O nome da seção engana.
+
+**VNIC.** *Virtual Network Interface Card* — a placa de rede virtual da
+instância. É ela que vive na subnet, carrega o IP privado e é o ponto onde as
+security lists são aplicadas. O campo `VNIC name` é apenas um rótulo, opcional.
+`Private IPv4 address` em branco deixa a OCI atribuir automaticamente.
+`Use network security groups` desmarcado: NSG é uma alternativa à Security
+List, aplicada por VNIC em vez de por subnet, e esta POC usa Security List.
+
+**O IP público não existe dentro do Ubuntu.** Ele é NAT feito pela OCI sobre o
+IP privado da VNIC. `ip addr show` vai mostrar `10.0.0.x` e nada mais — isso é
+o comportamento correto, não sinal de que o IP público falhou.
+
 ### 3.4 Primeiro acesso
 
 ```powershell
@@ -163,6 +287,41 @@ na OCI. Não é `root`, nem `opc` (esse é das imagens Oracle Linux).
 A porta 22 já vem liberada nas duas camadas de firewall. Se este passo falhar,
 pare e resolva antes de continuar: daqui em diante, SSH é o único acesso à
 máquina.
+
+#### `Connection refused` não é `timeout`
+
+A distinção diz **onde** está o problema, e vale para toda a POC:
+
+| Sintoma | O que aconteceu | Onde olhar |
+|---|---|---|
+| `timeout` | o pacote foi descartado em silêncio | firewall bloqueando ou rota faltando — o caminho |
+| `Connection refused` | veio um TCP RST de volta: "cheguei, e não há nada escutando aqui" | o destino, não o caminho |
+
+Um `Connection refused` na porta 22 logo após criar a instância é normal: o
+console marca `Running` assim que o hypervisor liga a máquina, antes de o
+Ubuntu terminar o boot e subir o `sshd`. Espere um ou dois minutos.
+
+Para checar se a porta já abriu, sem tentar autenticar, no PowerShell:
+
+```powershell
+Test-NetConnection <ip-publico> -Port 22
+```
+
+`TcpTestSucceeded : True` significa que o serviço subiu.
+
+Se continuar recusando após alguns minutos, verifique nesta ordem: o IP público
+na página da instância, a regra de ingress da porta 22 na Security List, e se a
+sua rede local não bloqueia saída na porta 22.
+
+#### `UNPROTECTED PRIVATE KEY FILE`
+
+O SSH recusa chave privada legível por outros usuários. No Windows:
+
+```powershell
+icacls $env:USERPROFILE\.ssh\oci-poc-nginx /inheritance:r /grant:r "$env:USERNAME:(R)"
+```
+
+Remove a herança de permissões e deixa apenas o seu usuário com leitura.
 
 ### 3.5 Criar 2 GB de swap
 
