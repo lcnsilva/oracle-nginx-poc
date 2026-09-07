@@ -22,12 +22,12 @@ Diferente dos outros documentos do repositório:
 | — | 1 — Repositório e apostila | ✅ concluída |
 | 0 | 2 — Provisionamento da VM na OCI | ✅ concluída |
 | 1 | 3 — API NestJS local | ✅ concluída |
-| 1 | 4 — Dockerfile e deploy na VM | 🔄 próxima |
-| 2A | 5 — Nginx servindo estático | ⬜ não iniciada |
+| 1 | 4 — Dockerfile e deploy na VM | ✅ concluída |
+| 2A | 5 — Nginx servindo estático | 🔄 próxima |
 | 2A | 6 — Abrir a porta 80 nas duas camadas | ⬜ não iniciada |
 | 2B | 7 — Proxy reverso | ⬜ não iniciada |
 
-**Próximo passo:** Tarefa 4, passo 1 — escrever `api/.dockerignore`.
+**Próximo passo:** Tarefa 5, passo 1 — instalar o Nginx na VM.
 
 ---
 
@@ -245,6 +245,66 @@ Remove-Item -Recurse -Force api\.git
 
 A partir daí `api/` passou a pertencer ao repositório principal, que é o que o
 plano prevê: a VM clona um repositório só.
+
+---
+
+## Tarefa 4 — Dockerfile e deploy na VM ✅
+
+Material: [`apostila/01-api-nestjs-docker.md`](apostila/01-api-nestjs-docker.md)
+
+### Executado
+
+1. **`api/.dockerignore`** e **`api/Dockerfile`** multi-stage escritos, com
+   `node:24-alpine` nos dois estágios. Commit `7fff58e`.
+2. **Repositório publicado** em https://github.com/lcnsilva/oracle-nginx-poc
+3. **Clonado na VM** em `~/poc-nginx`.
+4. **Estado "antes" registrado:** `curl localhost:8080/health` →
+   `Connection refused`.
+5. **Build na VM** com `docker build -t poc-api .` — concluído sem `Killed`,
+   confirmando que o swap da Tarefa 2 cumpriu o papel.
+6. **Container em execução:**
+   `docker run -d --name poc-api --restart unless-stopped -p 127.0.0.1:8080:8080 poc-api`
+
+### Checkpoint
+
+- [x] `curl localhost:8080/health` → `{"status":"ok"}`
+- [x] `sudo ss -tlnp | grep 8080` → `127.0.0.1:8080`, não `0.0.0.0:8080`
+- [x] Revisão conceitual feita
+
+Saída do `ss`:
+
+```
+LISTEN 0 4096   127.0.0.1:8080   0.0.0.0:*   users:(("docker-proxy",pid=3686,fd=8))
+```
+
+A primeira coluna é o **bind local** — é ela que importa. A segunda é o *peer*,
+e o `0.0.0.0:*` ali significa "aceita de qualquer origem", não um bind aberto.
+Quem segura o socket no host é o `docker-proxy`, não o Node — o processo Node
+vive no namespace de rede do container.
+
+### Por que `-p 127.0.0.1:8080:8080` e não `-p 8080:8080`
+
+| Comando | Onde a porta aparece | Quem alcança |
+|---|---|---|
+| sem `-p` | só na bridge do Docker | outros containers; nem o host |
+| `-p 127.0.0.1:8080:8080` | loopback do host | processos dentro da VM — o Nginx |
+| `-p 8080:8080` | todas as interfaces do host | quem chegar por `ens3` (`10.0.0.215:8080`) |
+
+Com `-p 8080:8080`, as duas camadas de firewall se comportariam de forma
+diferente:
+
+| Camada | Protegeria? |
+|---|---|
+| Security List (OCI) | sim — é externa à VM, o Docker não a alcança |
+| iptables da VM | **não** — o Docker publica portas via DNAT em `PREROUTING`, e o tráfego segue por `FORWARD`, nunca pela chain `INPUT` |
+
+Ou seja: a porta ficaria protegida por uma única camada, configurada num
+console web, sem que nada dentro da máquina reclamasse. E o erro seria
+invisível — tudo continuaria funcionando pelo Nginx, nenhum teste falharia.
+
+Para filtrar tráfego de container com iptables existe a chain `DOCKER-USER`,
+avaliada antes das regras geradas pelo Docker. Fora do escopo desta POC, que
+resolve prendendo no loopback.
 
 ---
 
