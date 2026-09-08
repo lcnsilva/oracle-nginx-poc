@@ -26,18 +26,29 @@ Diferente dos outros documentos do repositório:
 | 2A | 5 — Nginx servindo estático | ✅ concluída |
 | 2A | 6 — Abrir a porta 80 nas duas camadas | ✅ concluída |
 | 2B | 7 — Proxy reverso | ✅ concluída |
+| pós-POC | Backlog 1 — `server_name` real e `location` com prefixo | ✅ concluída |
+| pós-POC | Backlog 2 — TLS/HTTPS com Let's Encrypt | ✅ concluída |
+| pós-POC | Backlog 3 — remover headers `Server` e `X-Powered-By` | ⬜ pendente |
+| Fase 3 | Rate limiting + fail2ban | ⬜ spec própria |
 
-**POC concluída.** Todas as sete tarefas fechadas, com as revisões conceituais
-feitas. Pendência única: commitar a versão final de `nginx/poc-api.conf`.
+**POC concluída**, e os dois primeiros itens de backlog também. O serviço está
+em HTTPS, com certificado válido e renovação automática verificada.
 
-**Próximo passo:** Fase 3 — rate limiting e fail2ban — em spec e plano
-próprios.
+**Próximo passo:** backlog item 3 (curto), depois a Fase 3 — rate limiting e
+fail2ban — em spec e plano próprios.
+
+Pendências menores anotadas:
+
+- o log da API ainda não registra o `X-Forwarded-Proto`; exige uma linha em
+  `api/src/main.ts` e um rebuild
+- o `index.html` ainda diz "se você está lendo isto pelo IP público", o que
+  deixou de valer quando o catch-all passou a responder `444`
+- a persistência da regra de iptables da porta 443 não foi confirmada com um
+  reboot
 
 Documentos irmãos: [`backlog.md`](backlog.md) para o que ficou fora de escopo, e
 [`perguntas-e-respostas.md`](perguntas-e-respostas.md) para as dúvidas que
 surgiram durante a execução, com as respostas.
-
-Ideias levantadas fora do escopo estão em [`backlog.md`](backlog.md).
 
 ---
 
@@ -54,6 +65,10 @@ Ideias levantadas fora do escopo estão em [`backlog.md`](backlog.md).
 | Instância | `poc-nginx` — `VM.Standard.E2.1.Micro`, Ubuntu |
 | IP público | `129.159.50.172` |
 | IP privado | `10.0.0.215` (interface `ens3`) |
+| Domínio | `lcnsilva.duckdns.org` (DuckDNS, registro A para o IP público) |
+| Certificado | Let's Encrypt, `/etc/letsencrypt/live/lcnsilva.duckdns.org/` |
+| Portas abertas | 22 (SSH), 80 (redireciona para HTTPS), 443 (aplicação) |
+| URL pública | `https://lcnsilva.duckdns.org/api/health` e `/api/info` |
 | Chave SSH | `C:\Users\lucia\.ssh\oci-poc-nginx` |
 | Node local | v24.13.0 / npm 11.6.2 |
 | Swap na VM | 2 GB em `/swapfile` |
@@ -862,32 +877,43 @@ qualquer forma. O ganho é não servir o site a requisições com `Host` alheio.
 
 ## Checkpoint final
 
+Estado depois da POC e dos itens 1 e 2 do backlog.
+
 | Item | Estado |
 |---|---|
-| `curl.exe http://129.159.50.172/health` retorna o JSON da API | ✅ |
-| `curl.exe http://129.159.50.172/info` retorna o JSON da API | ✅ |
+| `curl.exe https://lcnsilva.duckdns.org/api/health` retorna o JSON | ✅ |
+| `curl.exe https://lcnsilva.duckdns.org/api/info` retorna o JSON | ✅ |
+| `http://` redireciona para `https://` com `301` | ✅ |
+| Certificado válido, sem aviso no cliente | ✅ |
+| `certbot renew --dry-run` bem-sucedido | ✅ |
+| Acesso por IP recusado, em HTTP (`444`) e em TLS (handshake abortado) | ✅ |
 | `sudo ss -tlnp \| grep 8080` mostra `127.0.0.1:8080` | ✅ |
 | `docker logs poc-api` registra o IP público real do cliente | ✅ |
-| Após `sudo reboot`, tudo continua funcionando sem intervenção | ✅ |
+| Após `sudo reboot`, tudo continua funcionando sem intervenção | ✅ até a Tarefa 6; não revalidado após a porta 443 |
 | Revisões conceituais das Tarefas 2 a 7 | ✅ |
-| `nginx/poc-api.conf` idêntico ao arquivo em uso na VM | ⬜ |
+| `nginx/poc-api.conf` idêntico ao arquivo em uso na VM | ✅ |
+| `docker logs` registrando o `X-Forwarded-Proto` | ⬜ pendência menor |
 
 ### O caminho completo, de ponta a ponta
 
 ```
 cliente (177.16.235.121)
-   │  HTTP :80
+   │  HTTPS :443     (:80 responde 301 e serve o desafio ACME)
    ▼
 Internet Gateway ──> Route Table (0.0.0.0/0) ──> Subnet pública
    │
    ▼
-Security List: ACCEPT tcp dport 80          ← camada 1, fora da VM
+Security List: ACCEPT tcp dport 80, 443       ← camada 1, fora da VM
    │
    ▼
-iptables INPUT regra 5: ACCEPT tcp dport 80 ← camada 2, dentro da VM
+iptables INPUT regras 5 e 6                   ← camada 2, dentro da VM
    │
    ▼
-Nginx :80  ──  proxy_pass + 3 headers
+Nginx: escolhe o server block pelo header Host
+   │      ├─ Host = lcnsilva.duckdns.org ──> termina o TLS, aplica o location
+   │      └─ qualquer outro ──────────────> 444 / handshake recusado
+   ▼
+location /api/  ──  proxy_pass + 4 headers  (HTTP puro daqui em diante)
    │
    ▼
 docker-proxy (127.0.0.1:8080)
@@ -896,9 +922,14 @@ docker-proxy (127.0.0.1:8080)
 container 172.17.0.2:8080  ──  NestJS ouvindo em 0.0.0.0
 ```
 
-Cinco pontos de bloqueio possíveis, cada um com o mesmo sintoma quando falha.
-A ordem do plano — provar rede com conteúdo estático antes de introduzir o
-proxy — existe para que nunca houvesse mais de um suspeito por vez.
+Seis pontos de bloqueio possíveis, e o `Host` como sétima condição — quase todos
+com o mesmo sintoma quando falham. A ordem do plano — provar rede com conteúdo
+estático antes de introduzir o proxy, e abrir a porta antes de emitir o
+certificado — existe para que nunca houvesse mais de um suspeito por vez.
+
+O TLS termina no Nginx. Da porta 8080 em diante o tráfego é HTTP puro, no
+loopback — por isso a aplicação depende do `X-Forwarded-Proto` para saber que o
+cliente veio por HTTPS.
 
 ### Onde a intuição falhou
 
@@ -918,11 +949,32 @@ inclusive por mim. Todos estão detalhados nas seções acima.
    conexão nova pela bridge — já havia um proxy no caminho antes do Nginx.
 6. **O iptables não protege porta publicada por container.** O Docker escreve
    DNAT em `PREROUTING` e o tráfego segue por `FORWARD`, contornando a `INPUT`.
+7. **A barra final do `proxy_pass` não é cosmética.** Sem caminho após a porta,
+   o URI é repassado inteiro; com caminho, o prefixo casado pelo `location` é
+   substituído. Invisível enquanto o `location` é `/`.
+8. **Um `reload` recusado mantém o serviço no ar.** Confirmado ao vivo com o
+   `duplicate default server`: o `systemctl reload` falhou, e o Nginx seguiu
+   servindo com a configuração antiga.
+9. **Abrir uma porta nova exige as duas camadas de novo.** A 443 foi esquecida
+   porque a 80 já estava aberta e o redirecionamento funcionava — o passo
+   visível havia sido o certificado.
+10. **Um `default_server` em TLS entrega seu certificado a qualquer sonda.**
+    Sem um bloco catch-all na 443, o Nginx elege o bloco nomeado como padrão e
+    apresenta o certificado antes de qualquer verificação de `Host`.
 
 ---
 
-## Fora de escopo desta POC
+## Fora de escopo
 
-TLS/HTTPS e certificados, rate limiting, fail2ban, load balancing, automação de
-deploy, domínio próprio. Rate limiting e fail2ban ganham spec e plano próprios
-depois do checkpoint da Tarefa 7.
+A spec original excluía TLS/HTTPS, certificados, domínio próprio, rate
+limiting, fail2ban, load balancing e automação de deploy.
+
+Depois do checkpoint da Tarefa 7, os três primeiros foram feitos como itens 1 e
+2 do backlog — registrados acima. **Continuam fora de escopo:**
+
+- rate limiting e fail2ban — Fase 3, com spec e plano próprios
+- load balancing entre múltiplas instâncias
+- automação de deploy: CI/CD, unit do systemd para a aplicação
+
+O `--restart unless-stopped` do container e o timer de renovação do certbot são
+a única automação existente.

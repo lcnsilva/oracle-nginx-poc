@@ -1,6 +1,7 @@
 # Perguntas e respostas — POC Nginx
 
-Todas as dúvidas que surgiram durante a execução da POC, com as respostas.
+Todas as dúvidas que surgiram durante a execução — a POC (Fases 0 a 2B) e os
+itens 1 e 2 do backlog, `server_name` real e TLS — com as respostas.
 
 Duas origens, marcadas em cada pergunta:
 
@@ -483,15 +484,83 @@ O Nginx compilado do código-fonte não tem essas pastas; costuma usar `conf.d/`
 Nenhuma é "a certa". Saber disso resolve boa parte da confusão de quem segue a
 documentação oficial e um tutorial de Ubuntu ao mesmo tempo.
 
-### Por que a barra final no `proxy_pass` importa?
+### Por que a barra final no `proxy_pass` importa? **[dúvida]**
 
-| `proxy_pass` | Requisição `/api/health` chega no container como |
-|---|---|
-| `http://127.0.0.1:8080` (sem caminho) | `/api/health` — URI repassado inteiro |
-| `http://127.0.0.1:8080/` (com caminho) | `/health` — o prefixo do `location` é substituído |
+Chega a requisição `GET /api/health`. O Nginx escolhe o `location /api/`, e o
+caminho fica dividido:
 
-Com `location /`, os dois se comportam igual — por isso a POC não percebe a
-diferença. Com um prefixo, escolher errado quebra todas as rotas.
+```
+/api/health
+└──┬─┘└──┬─┘
+   │     └─ o resto:   health
+   └─ o que casou:     /api/
+```
+
+Agora ele precisa decidir **qual caminho enviar para a aplicação**, e a regra é
+uma só: **tem caminho depois da porta?**
+
+**Sem caminho** — `http://127.0.0.1:8080` termina na porta.
+"Não recebi instrução de caminho; encaminho o URI original inteiro."
+→ envia `/api/health`
+
+**Com caminho** — `http://127.0.0.1:8080/` tem um `/` depois da porta.
+"Recebi um caminho; substituo a parte que casou por ele e mantenho o resto."
+→ substitui `/api/` por `/`, mantém `health` → envia `/health`
+
+| `proxy_pass` | Tem caminho? | Chega na aplicação |
+|---|---|---|
+| `http://127.0.0.1:8080` | não | `/api/health` |
+| `http://127.0.0.1:8080/` | sim, `/` | `/health` |
+| `http://127.0.0.1:8080/v2/` | sim, `/v2/` | `/v2/health` |
+
+A terceira linha mostra que não é sobre a barra em si — é sobre existir um
+caminho. A barra sozinha é o caminho mais curto possível.
+
+**Evidência, medida na execução.** Mesma URL, mesmo cliente, um caractere de
+diferença na configuração:
+
+```
+proxy_pass http://127.0.0.1:8080;   →  GET /api/health   | x-real-ip=177.16.235.121
+proxy_pass http://127.0.0.1:8080/;  →  GET /health       | x-real-ip=177.16.235.121
+```
+
+Os headers idênticos confirmam que só o caminho mudou.
+
+Sem a barra, o 404 vem **do Nest**, em JSON; com a configuração estática vinha
+do Nginx, em HTML. A assinatura da resposta já diz quem respondeu.
+
+**Por que isso não aparece com `location /`:** o prefixo casado é `/`, e
+substituí-lo por `/` não muda nada. As duas formas são equivalentes enquanto
+não houver prefixo a remover.
+
+### Onde colocar o bloco catch-all? **[dúvida]**
+
+No mesmo arquivo, depois do bloco nomeado. `nginx/poc-api.conf` continua sendo
+a unidade versionada, e os dois blocos são a configuração daquela porta.
+
+**A ordem no arquivo não decide nada.** O Nginx compara o header `Host` contra
+os `server_name` de todos os blocos daquela porta; se nenhum casar, usa o
+marcado `default_server`. Não é "o primeiro que aparece".
+
+Separar o catch-all em arquivo próprio também é defensável — é uma preocupação
+da porta, não do site. Para um repositório com um arquivo versionado, junto é
+mais simples de acompanhar.
+
+### `a duplicate default server for 0.0.0.0:80`
+
+Só **um** bloco por porta pode carregar a marca `default_server`. Ao criar o
+catch-all sem remover a marca do bloco nomeado, o Nginx recusa a configuração:
+
+```
+[emerg] a duplicate default server for 0.0.0.0:80 in /etc/nginx/sites-enabled/poc-api:21
+```
+
+O erro é reportado na **segunda** ocorrência — a linha citada é a do bloco novo,
+não a do antigo.
+
+O `systemctl reload` seguinte falha com `Job for nginx.service failed`, e **o
+Nginx continua no ar** com a configuração antiga. A mensagem do systemd relata
+que o `ExecReload` retornou erro, não que o serviço morreu.
 
 ### Por que `X-Real-IP` e `X-Forwarded-For` existem os dois?
 
@@ -548,12 +617,139 @@ ssl_certificate_key /caminho/privkey.pem;
 E aí `proxy_set_header X-Forwarded-Proto $scheme` passa a fazer sentido: conta
 à aplicação se o cliente veio por HTTP ou HTTPS.
 
-**O que impede hoje: falta um domínio.** Certificado é emitido para um **nome**,
+**O que impedia: faltava um domínio.** Certificado é emitido para um **nome**,
 não para um IP. A autoridade certificadora precisa verificar que você controla
 aquele nome; com IP puro não há o que validar. Um certificado autoassinado
 funciona tecnicamente, mas todo navegador mostra tela de aviso.
 
-O bloqueio não é técnico do lado do Nginx — é de identidade.
+O bloqueio não era técnico do lado do Nginx — era de identidade. Resolvido com
+um subdomínio DuckDNS; ver a seção seguinte.
+
+---
+
+## TLS e certificados
+
+### GitHub Pages serve como domínio? **[dúvida]**
+
+Não. Ele dá um nome — `usuario.github.io` — mas apontando para os servidores do
+GitHub, e o DNS dele não é seu. Não há como fazer esse nome resolver para o IP
+da sua VM.
+
+Pages hospeda conteúdo estático na infraestrutura do GitHub. Usar domínio
+customizado nele é possível, mas exige já ter um domínio — a mesma dependência
+que se queria evitar.
+
+### Como conseguir um nome de host sem registrar domínio?
+
+| Opção | Como funciona | TLS depois |
+|---|---|---|
+| **nip.io / sslip.io** | `129-159-50-172.nip.io` resolve para o IP embutido no próprio nome. Zero cadastro | cota do Let's Encrypt pode apertar |
+| **DuckDNS** | cadastro rápido, você escolhe `algo.duckdns.org` e aponta para o seu IP. DNS real e editável | funciona bem — `duckdns.org` está na Public Suffix List, então cada subdomínio tem cota própria |
+| **Domínio próprio** | registrar e criar um registro A | sem ressalva |
+
+Esta POC usou DuckDNS: `lcnsilva.duckdns.org`.
+
+"Resposta não autoritativa" no `nslookup` é normal — significa que a resposta
+veio do cache do resolvedor, não do servidor autoritativo do domínio.
+
+### `certonly` ou `--nginx`?
+
+| Modo | O que faz |
+|---|---|
+| `certbot --nginx` | emite o certificado **e reescreve** o seu arquivo: adiciona `listen 443 ssl`, os caminhos do certificado e um bloco de redirecionamento |
+| `certbot certonly` | apenas emite e renova. A configuração do Nginx fica por sua conta |
+
+Esta POC usou `certonly`, coerente com o objetivo de ver o que a automação
+normalmente esconde.
+
+### Como o Let's Encrypt verifica que o domínio é seu?
+
+Pelo desafio HTTP-01: a autoridade emite um desafio, o certbot publica um
+arquivo em `/.well-known/acme-challenge/`, e o servidor dela busca esse arquivo
+pelo seu domínio, na **porta 80**. Servir o arquivo prova controle sobre o nome.
+
+Por isso o comando usa `--webroot`, apontando para o diretório que o Nginx já
+serve:
+
+```bash
+sudo certbot certonly --webroot -w /var/www/poc-api \
+  -d lcnsilva.duckdns.org \
+  --deploy-hook "systemctl reload nginx"
+```
+
+Sem plugin, e sem o certbot tocar na configuração.
+
+`--dry-run` antes da emissão real usa o ambiente de teste: o Let's Encrypt tem
+cota, e queimar tentativa com erro de digitação é chato.
+
+### Para que serve o `--deploy-hook`?
+
+No modo `certonly`, o certbot renova sozinho a cada ~60 dias, mas **não sabe que
+o Nginx precisa reler o arquivo novo**. Sem o hook, o certificado é renovado e o
+Nginx segue servindo o vencido até alguém reiniciar o serviço por outro motivo.
+
+Verificação do ciclo completo, contra o ambiente de teste:
+
+```bash
+sudo certbot renew --dry-run
+```
+
+### Por que o bloco da porta 80 não pode ser removido?
+
+Duas funções, as duas ainda necessárias:
+
+1. servir `/.well-known/acme-challenge/` — a **renovação** usa o mesmo desafio,
+   para sempre
+2. redirecionar o resto com `301` para HTTPS
+
+O `location` do desafio vence o `location /` por ser prefixo mais longo,
+independente da ordem no arquivo.
+
+### Para que serve testar `curl -k https://<ip>`? **[dúvida]**
+
+Para verificar que o catch-all cobre **TLS também**, não só HTTP.
+
+Sem um bloco catch-all na 443, o Nginx elegeria algum bloco como padrão daquela
+porta — e o único candidato seria o nomeado. Resultado: quem se conectasse por
+IP receberia o certificado de `lcnsilva.duckdns.org` **antes** de qualquer
+verificação de `Host`, e o site seria servido a qualquer sonda.
+
+Com `ssl_reject_handshake on`, o resultado esperado é erro de handshake:
+
+```
+curl: (35) schannel: ... fatal SSL/TLS alert received
+```
+
+O `-k` desliga a *validação* do certificado e não ajuda, porque não há
+certificado a validar: a diretiva aborta a negociação antes disso. O servidor se
+recusa a apresentar identidade.
+
+**Ressalva honesta:** isso não esconde o domínio. Certificados do Let's Encrypt
+vão para os logs públicos de Certificate Transparency, então o nome é
+descobrível de qualquer forma. O ganho é não servir o site a requisições com
+`Host` alheio.
+
+### Por que a aplicação precisa do `X-Forwarded-Proto`?
+
+Porque o TLS termina no Nginx. Da porta 8080 em diante o tráfego é HTTP puro, no
+loopback — a aplicação não tem como saber que o cliente veio por HTTPS.
+
+`proxy_set_header X-Forwarded-Proto $scheme` transporta essa informação. Sem
+ele, qualquer redirecionamento ou URL absoluta gerada pela aplicação sai
+apontando para `http://`.
+
+### Abrir a porta 443 exige o quê?
+
+O mesmo de qualquer porta nova: **as duas camadas**.
+
+1. Security List: regra de ingress `TCP` destino `443`
+2. iptables: `-I INPUT <N>` antes do `REJECT`, seguido de
+   `netfilter-persistent save`
+
+Este passo foi esquecido na primeira tentativa — a porta 80 já estava aberta e o
+redirecionamento funcionava, então o certificado parecia ser o único trabalho
+novo. O sintoma foi `timeout` no `https://` com o `301` do `http://` funcionando
+normalmente.
 
 ---
 

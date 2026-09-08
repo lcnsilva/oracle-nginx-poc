@@ -238,13 +238,21 @@ copiar-e-colar. Ela não é opcional: uma fase só fecha quando o comando passa
 
 ## Fora de escopo
 
+> **Nota posterior (2026-09-08).** Esta spec descreve a POC como foi planejada e
+> executada. Depois do checkpoint da Tarefa 7, os itens de TLS e domínio saíram
+> desta lista e foram implementados como itens 1 e 2 do
+> [backlog](../../backlog.md). O registro está em
+> [`passo-a-passo.md`](../../passo-a-passo.md). O restante desta seção continua
+> valendo.
+
 - TLS/HTTPS e Let's Encrypt — o conceito é explicado na apostila; a
-  implementação fica para depois
+  implementação fica para depois *(feito no backlog item 2)*
 - Rate limiting (`limit_req_zone`) e fail2ban — spec separada, escrita após o
   checkpoint da Fase 2B
 - Load balancing entre múltiplas instâncias
 - Automação de deploy: CI/CD, unit do systemd, restart policy do Docker
-- Domínio próprio e DNS — o acesso é por IP público direto
+- Domínio próprio e DNS — o acesso é por IP público direto *(feito no backlog
+  item 1, com um subdomínio DuckDNS)*
 
 ## Referências oficiais
 

@@ -39,11 +39,17 @@ autoridade certificadora, que o navegador confere. Certificados gratuitos e
 automatizados existem (Let's Encrypt), mas exigem um domínio próprio — não se
 emite certificado para um IP.
 
-Esta POC fica em HTTP na porta 80. TLS está **fora de escopo** e ganha projeto
-próprio depois. Fica registrado por que: falta um domínio, e adicionar
-certificado agora acrescentaria uma segunda variável a cada falha de rede.
+Esta POC fica em HTTP na porta 80. TLS está **fora de escopo nesta fase**, por
+dois motivos: falta um domínio, e adicionar certificado agora acrescentaria uma
+segunda variável a cada falha de rede.
 
-Referência para depois: https://nginx.org/en/docs/http/configuring_https_servers.html
+> **Feito depois.** TLS foi implementado como item 2 do backlog, com um
+> subdomínio DuckDNS e Let's Encrypt. A execução está em
+> [`../passo-a-passo.md`](../passo-a-passo.md) e o detalhamento em
+> [`../perguntas-e-respostas.md`](../perguntas-e-respostas.md), seção
+> "TLS e certificados".
+
+Referência: https://nginx.org/en/docs/http/configuring_https_servers.html
 
 ### 1.3 A estrutura do arquivo de configuração
 
