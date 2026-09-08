@@ -738,6 +738,128 @@ passa a ser pelo nome.
 
 ---
 
+## Backlog item 2 — TLS/HTTPS com Let's Encrypt ✅
+
+Referência: [`backlog.md`](backlog.md) item 2.
+
+### Ordem, e por que essa
+
+1. abrir a porta 443 nas duas camadas
+2. emitir o certificado — a validação usa a porta **80**, já aberta
+3. só então reescrever o Nginx: se o arquivo apontar para um certificado
+   inexistente, o Nginx não sobe
+
+### Certificado: `certonly` + `--webroot`
+
+O certbot foi usado no modo que **não toca** na configuração do Nginx, para que
+o bloco TLS fosse escrito à mão — coerente com o objetivo da POC.
+
+```bash
+sudo certbot certonly --webroot -w /var/www/poc-api \
+  -d lcnsilva.duckdns.org \
+  --deploy-hook "systemctl reload nginx"
+```
+
+A validação HTTP-01 funciona assim: o Let's Encrypt emite um desafio, o certbot
+publica um arquivo em `/.well-known/acme-challenge/`, e o servidor da autoridade
+busca esse arquivo pelo domínio, na porta 80. É o que prova controle sobre o
+nome.
+
+`--webroot` grava o arquivo no diretório que o Nginx já serve — sem plugin e sem
+o certbot reescrever nada.
+
+O `--deploy-hook` é essencial no modo `certonly`: o certbot renova sozinho, mas
+não sabe que o Nginx precisa reler o arquivo novo. Sem ele, o certificado é
+renovado e o Nginx segue servindo o vencido.
+
+Renovação verificada:
+
+```
+sudo certbot renew --dry-run
+Congratulations, all simulated renewals succeeded
+```
+
+### Configuração: três blocos
+
+- **Porta 80, nomeado** — serve `/.well-known/acme-challenge/` (a renovação
+  precisa disso para sempre) e redireciona o resto com `301`. O `location` do
+  desafio vence o `/` por ser prefixo mais longo, independente da ordem.
+- **Porta 443, nomeado** — o certificado, o proxy para a API e o estático.
+- **Catch-all, 80 e 443** — `return 444` e `ssl_reject_handshake on`.
+
+Arquivo completo versionado em [`../nginx/poc-api.conf`](../nginx/poc-api.conf).
+
+`X-Forwarded-Proto $scheme` entrou no proxy: a conexão do Nginx até a API é
+sempre HTTP puro no loopback, então sem esse header a aplicação não tem como
+saber que o cliente veio por HTTPS.
+
+### Erro encontrado: a porta 443 esquecida
+
+Com a configuração no ar, o redirecionamento funcionou de primeira:
+
+```
+HTTP/1.1 301 Moved Permanently
+Location: https://lcnsilva.duckdns.org/api/health
+```
+
+E o HTTPS deu `timeout`. O passo 1 do plano — abrir a 443 — tinha ficado para
+trás, porque o certificado e o Nginx eram os passos visíveis, e a porta 80 já
+estava aberta desde a Tarefa 6.
+
+Diagnóstico na sequência aprendida, do mais barato ao mais caro:
+
+```bash
+sudo ss -tlnp sport = :443        # Nginx escutando em 0.0.0.0:443 ✓
+sudo iptables -L INPUT -n --line-numbers   # só 22 e 80 antes do REJECT ✗
+```
+
+Depois de inserir a regra do iptables, ainda timeout. O `tcpdump` fechou a
+questão — toda a captura era tráfego de **saída** da VM (snap, agente da OCI),
+e nenhum SYN do cliente:
+
+```
+10.0.0.215.33058 > 192.29.130.105.443    ← saída, ruído
+(nenhuma linha 177.16.235.121 > 10.0.0.215.443)
+```
+
+Faltava a regra na Security List. Filtro mais preciso para a próxima vez:
+
+```bash
+sudo tcpdump -ni ens3 tcp dst port 443 and src host <ip-do-cliente>
+```
+
+Ordem final do iptables, com a 443 antes do `REJECT`:
+
+```
+4  ACCEPT  tcp dpt:22
+5  ACCEPT  tcp dpt:80
+6  ACCEPT  tcp dpt:443
+7  REJECT  reject-with icmp-host-prohibited
+```
+
+### Validação
+
+| Comando | Resultado |
+|---|---|
+| `curl.exe -I http://lcnsilva.duckdns.org/api/health` | `301` com `Location: https://...` |
+| `curl.exe https://lcnsilva.duckdns.org/api/health` | `{"status":"ok"}`, sem aviso de certificado |
+| `sudo certbot renew --dry-run` | simulação bem-sucedida |
+| `curl.exe -k --max-time 10 https://129.159.50.172` | `curl: (35) schannel: ... fatal SSL/TLS alert received` |
+
+O último confirma o catch-all em TLS. O `-k` desliga a *validação* do
+certificado e não ajuda, porque não há certificado a validar: o
+`ssl_reject_handshake on` aborta a negociação antes disso.
+
+Sem esse bloco, o Nginx elegeria o bloco nomeado como padrão da porta 443, e
+qualquer sonda que se conectasse por IP receberia o certificado de
+`lcnsilva.duckdns.org` antes de qualquer verificação de `Host`.
+
+**Ressalva:** isso não esconde o domínio. Certificados do Let's Encrypt vão para
+os logs públicos de Certificate Transparency, então o nome é descobrível de
+qualquer forma. O ganho é não servir o site a requisições com `Host` alheio.
+
+---
+
 ## Checkpoint final
 
 | Item | Estado |

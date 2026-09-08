@@ -85,12 +85,17 @@ Um domínio próprio. O que também destrava o item 2.
 
 ---
 
-## 2. TLS/HTTPS com Let's Encrypt
+## 2. TLS/HTTPS com Let's Encrypt ✅
 
-Já registrado como fora de escopo na spec da POC. Depende de domínio próprio —
-não se emite certificado para IP. Uma vez feito o item 1, este é o passo
-natural: `server_name` real, certificado, redirecionamento de 80 para 443, e o
-header `X-Forwarded-Proto` passando a fazer sentido.
+**Concluído em:** 2026-09-08. Execução registrada em
+[`passo-a-passo.md`](passo-a-passo.md).
+
+Certificado emitido com `certbot certonly --webroot`, mantendo a configuração
+do Nginx escrita à mão. Redirecionamento 80→443, `X-Forwarded-Proto $scheme` no
+proxy, e `ssl_reject_handshake on` no bloco catch-all.
+
+Pendência menor: o log da API ainda não registra o `X-Forwarded-Proto`. Exige
+uma linha em `api/src/main.ts` e um rebuild.
 
 Referência: https://nginx.org/en/docs/http/configuring_https_servers.html
 
