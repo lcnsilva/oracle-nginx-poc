@@ -5,9 +5,16 @@ Cada um vira spec e plano próprios quando for a vez.
 
 ---
 
-## 1. `server_name` explícito e `location` alinhado à rota do container
+## 1. `server_name` explícito e `location` alinhado à rota do container ✅
 
 **Levantado em:** Tarefa 5, ao escrever o `server` block estático.
+**Concluído em:** 2026-09-08. Execução registrada em
+[`passo-a-passo.md`](passo-a-passo.md).
+
+Implementado com um subdomínio DuckDNS (`lcnsilva.duckdns.org`) em vez de
+domínio próprio, e **sem** `setGlobalPrefix` no Nest — a remoção do prefixo
+ficou a cargo do Nginx, justamente para que a diferença da barra final no
+`proxy_pass` fosse observável. Detalhes abaixo, mantidos como referência.
 
 ### Como está hoje
 

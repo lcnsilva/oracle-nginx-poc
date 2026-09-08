@@ -614,6 +614,130 @@ timeout. **Anotar aqui o que realmente acontecer.**
 
 ---
 
+## Backlog item 1 — `server_name` real e `location` com prefixo ✅
+
+Executado após o fechamento da POC. Referência:
+[`backlog.md`](backlog.md) item 1.
+
+### Nome de host
+
+Subdomínio gratuito no DuckDNS: `lcnsilva.duckdns.org` → `129.159.50.172`.
+
+GitHub Pages foi cogitado e **não serve**: ele dá um nome, mas apontando para os
+servidores do GitHub, e o DNS dele não é seu. Usar domínio customizado no Pages
+exigiria já ter um domínio — a mesma dependência.
+
+DuckDNS foi preferido a `nip.io` por ser DNS editável e por estar na Public
+Suffix List, o que dá cota própria de Let's Encrypt a cada subdomínio — o que
+importa para o item 2 do backlog.
+
+### Configuração: dois `server` blocks
+
+```nginx
+server {
+    listen 80;
+    server_name lcnsilva.duckdns.org;
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:8080/;
+        proxy_set_header Host            $host;
+        proxy_set_header X-Real-IP       $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    location / {
+        root /var/www/poc-api;
+        index index.html;
+    }
+}
+
+server {
+    listen 80 default_server;
+    server_name _;
+    return 444;
+}
+```
+
+A ordem no arquivo não decide nada: o Nginx compara o header `Host` contra os
+`server_name` de todos os blocos daquela porta e, se nenhum casar, usa o marcado
+`default_server`.
+
+### Erro encontrado: `duplicate default server`
+
+O `default_server` foi mantido por engano no bloco nomeado, e o Nginx recusou a
+configuração:
+
+```
+[emerg] a duplicate default server for 0.0.0.0:80 in /etc/nginx/sites-enabled/poc-api:21
+```
+
+Só um bloco por porta pode carregar a marca. Reportado na segunda ocorrência.
+
+O `systemctl reload` seguinte falhou com `Job for nginx.service failed` — e
+**o Nginx continuou no ar**, com a configuração antiga. Confirmação prática da
+correção `b21ec7f`: o mestre rejeita a configuração nova e segue servindo. A
+mensagem do systemd relata que o `ExecReload` retornou erro, não que o serviço
+morreu.
+
+### A decisão de não usar `setGlobalPrefix`
+
+O backlog previa `setGlobalPrefix('api')` no Nest. Foi descartado de propósito:
+com o Nest também usando o prefixo, `proxy_pass` com e sem barra produziriam o
+mesmo resultado, e a armadilha que justifica o item desapareceria.
+
+Deixando o Nest servindo `/health` na raiz e o Nginx expondo em `/api/`, a
+diferença fica mensurável — e o escopo cai para um arquivo só, sem rebuild nem
+redeploy.
+
+### A barra final, com evidência dos dois lados
+
+Mesma URL (`http://lcnsilva.duckdns.org/api/health`), mesmo cliente, um
+caractere de diferença na configuração:
+
+```
+proxy_pass http://127.0.0.1:8080;   →  GET /api/health   | x-real-ip=177.16.235.121
+proxy_pass http://127.0.0.1:8080/;  →  GET /health       | x-real-ip=177.16.235.121
+```
+
+Os headers idênticos mostram que apenas o caminho mudou.
+
+A regra: **tem caminho depois da porta?**
+
+| `proxy_pass` | O que o Nginx faz | Chega no Nest |
+|---|---|---|
+| `http://127.0.0.1:8080` | repassa o URI original inteiro | `/api/health` |
+| `http://127.0.0.1:8080/` | substitui o prefixo casado pelo `location` | `/health` |
+| `http://127.0.0.1:8080/v2/` | idem, com outro caminho | `/v2/health` |
+
+Não é sobre a barra em si — é sobre existir um caminho. A barra sozinha é o
+caminho mais curto possível.
+
+Sem a barra, o 404 vem **do Nest**, em JSON, e não do Nginx em HTML. A
+assinatura da resposta já diz quem respondeu.
+
+**Por que isso nunca apareceu durante a POC:** com `location /`, o prefixo
+casado é `/`, e substituí-lo por `/` não muda nada. As duas formas são
+equivalentes enquanto não houver prefixo a remover.
+
+### Validação
+
+| Comando | Resultado |
+|---|---|
+| `curl.exe http://lcnsilva.duckdns.org/api/health` | `{"status":"ok"}` |
+| `curl.exe http://lcnsilva.duckdns.org/api/info` | JSON com nome, versão e uptime |
+| `curl.exe http://lcnsilva.duckdns.org/` | o `index.html` estático |
+| `curl.exe --max-time 10 http://129.159.50.172` | `curl: (52) Empty reply from server` |
+
+O último é o ponto do exercício: mesmo IP, mesma porta, mesmo processo Nginx, e
+o resultado muda porque o header `Host` mudou. O `return 444` fecha a conexão
+sem enviar resposta alguma — código não-padrão do Nginx criado para isso, útil
+contra as sondas automatizadas registradas no log durante a Tarefa 7.
+
+**Consequência aceita:** o acesso por IP deixou de funcionar. Toda validação
+passa a ser pelo nome.
+
+---
+
 ## Checkpoint final
 
 | Item | Estado |
